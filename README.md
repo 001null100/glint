@@ -6,6 +6,8 @@ restarts — including unsaved drafts.
 
 ![The eight themes](assets/themes-preview.jpg)
 
+![Cyberpunk syntax palette](assets/syntax-preview.png)
+
 ## Features
 
 - **Tabs and splits** — tabs per pane, drag to reorder or drop onto another pane,
@@ -20,6 +22,9 @@ restarts — including unsaved drafts.
 - **Command palette**, quick switcher, go to line, language picker.
 - **Eight themes**, each with its own animated background and adjustable knobs:
   Aurora, Deep Space, Nebula, Ember, Synthwave, Cascade, Abyss, Void.
+- **Syntax palettes** chosen separately from the theme: Cyberpunk (default),
+  Outrun, Candy, Ice, or "Match theme". 37 token colours, including control
+  flow, calls, built-ins, modifiers, lifetimes/labels, brackets and doc comments.
 - **Settings panel** (Ctrl+,) with live sliders for font, background intensity,
   speed, scale, per-scene knobs, dimming behind text, frame rate and quality.
 
@@ -38,8 +43,8 @@ Needs a Vulkan (or GL) capable GPU. Tested on Linux / Wayland (KDE Plasma).
 
 | | |
 |---|---|
-| Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new tab / open / save / save as |
-| Ctrl+W, Ctrl+Shift+T | close tab, reopen closed tab |
+| Ctrl+N or Ctrl+T / Ctrl+O / Ctrl+S / Ctrl+Shift+S | new tab / open / save / save as |
+| Ctrl+W, Ctrl+Shift+W | close tab, reopen closed tab |
 | Ctrl+Tab, Ctrl+Shift+Tab, Alt+1…9 | switch tabs |
 | Ctrl+\\, Ctrl+Shift+\\ | split right, split down |
 | Ctrl+Alt+Arrows, F6 | move focus between panes |
@@ -47,7 +52,8 @@ Needs a Vulkan (or GL) capable GPU. Tested on Linux / Wayland (KDE Plasma).
 | Ctrl+G | go to line (`120` or `120:8`) |
 | Ctrl+Shift+P or F1 | command palette |
 | Ctrl+P | switch tab / open recent file |
-| Ctrl+T | theme picker (live preview) |
+| Ctrl+Shift+T | theme picker (live preview) |
+| Ctrl+Shift+C | syntax colour picker (live preview) |
 | Ctrl+, | settings |
 | Ctrl+D, Alt+Up / Alt+Down, Ctrl+Shift+K | duplicate, move, delete line |
 | Ctrl+/ | toggle comment |
@@ -58,7 +64,7 @@ Needs a Vulkan (or GL) capable GPU. Tested on Linux / Wayland (KDE Plasma).
 Closing an unsaved tab asks once; **Don't Save** is the default, so `Ctrl+W`
 then `Enter` — or `Ctrl+W` twice — closes it without saving. A held key never
 answers the prompt, and a discarded draft can still be brought back with
-`Ctrl+Shift+T` until you quit.
+`Ctrl+Shift+W` until you quit.
 
 ## Files
 
@@ -66,6 +72,7 @@ answers the prompt, and a discarded draft can still be brought back with
 |---|---|
 | `~/.config/glint/config.toml` | settings (written by the settings panel) |
 | `~/.config/glint/themes/*.toml` | your own themes; same format as `assets/themes/` |
+| `~/.config/glint/syntax/*.toml` | your own syntax palettes; same format as `assets/syntax/` |
 | `~/.local/share/glint/session.json` | open tabs and layout |
 | `~/.local/share/glint/drafts/` | unsaved text |
 

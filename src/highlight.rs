@@ -81,26 +81,34 @@ fn table() -> &'static [(Scope, Token)] {
     TABLE.get_or_init(|| {
         use Token::*;
         const RAW: &[(&str, Token)] = &[
+            ("comment.block.documentation", DocComment),
+            ("comment.line.documentation", DocComment),
             ("comment", Comment),
             ("punctuation.definition.comment", Comment),
             ("constant.character.escape", Escape),
             ("constant.other.placeholder", Escape),
+            ("punctuation.section.interpolation", Escape),
             ("punctuation.definition.string", String),
+            ("string.regexp", Regex),
             ("string", String),
             ("constant.numeric", Number),
-            ("constant.language", Constant),
+            ("constant.language", Language),
             ("variable.other.constant", Constant),
             ("constant", Constant),
             ("keyword.operator.word", Keyword),
             ("keyword.operator", Operator),
+            ("keyword.control", Control),
             // newer syntaxes use this where older ones say `storage.type`
             ("keyword.declaration", Storage),
             ("keyword", Keyword),
             ("storage.type.function.arrow", Operator),
+            ("storage.modifier.lifetime", Label),
+            ("storage.modifier", Modifier),
             ("storage", Storage),
             ("entity.name.function", Function),
-            ("support.function", Function),
-            ("variable.function", Function),
+            ("support.function.builtin", Builtin),
+            ("support.function", Call),
+            ("variable.function", Call),
             ("entity.name.tag", Tag),
             ("punctuation.definition.tag", Punctuation),
             ("entity.other.attribute-name", Attribute),
@@ -113,33 +121,38 @@ fn table() -> &'static [(Scope, Token)] {
             ("entity.name.macro", Macro),
             ("support.macro", Macro),
             ("variable.annotation", Macro),
+            ("punctuation.definition.annotation", Macro),
             ("meta.annotation", Macro),
-            ("entity.name.label", Constant),
+            ("entity.name.label", Label),
             ("entity.name.constant", Constant),
             ("entity.other.inherited-class", Type),
             ("entity.name", Type),
             ("support.type.property-name", Property),
             ("meta.property-name", Property),
-            ("support.type", Type),
-            ("support.class", Type),
+            ("support.type", Builtin),
+            ("support.class", Builtin),
             ("support.constant", Constant),
             ("variable.parameter", Parameter),
-            ("variable.language", Constant),
+            ("variable.language", This),
             ("variable.other.member", Property),
             ("variable.other.property", Property),
+            ("meta.property.object", Property),
             ("variable", Variable),
             ("markup.bold", Strong),
             ("markup.italic", Emphasis),
             ("markup.underline.link", Link),
-            ("markup.raw", String),
-            ("markup.quote", Comment),
+            ("markup.raw", Code),
+            ("markup.quote", Quote),
             ("markup.inserted", Inserted),
             ("markup.deleted", Deleted),
             ("markup.changed", Constant),
             ("meta.diff.header", Keyword),
             ("meta.diff.range", Function),
-            ("punctuation.definition.list_item", Operator),
-            ("markup.list.numbered.bullet", Operator),
+            ("punctuation.definition.list_item", ListMarker),
+            ("markup.list.numbered.bullet", ListMarker),
+            ("punctuation.section", Bracket),
+            ("punctuation.definition.generic", Bracket),
+            ("punctuation.definition.group", Bracket),
             ("punctuation", Punctuation),
             ("invalid", Invalid),
         ];
@@ -168,6 +181,10 @@ fn classify_stack(cache: &mut HashMap<Scope, Option<Token>>, stack: &ScopeStack)
                 if scopes.iter().any(|x| key.is_prefix_of(*x)) {
                     return Some(Token::Property);
                 }
+            }
+            // comment markers inside a doc comment belong to it
+            if tok == Token::Comment && scopes.iter().any(|x| classify_scope(cache, *x) == Some(Token::DocComment)) {
+                return Some(Token::DocComment);
             }
             return Some(tok);
         }
@@ -584,8 +601,8 @@ mod tests {
         assert_eq!(tok_of(&h, &r, 1, "hi"), Some(Token::String));
         assert_eq!(tok_of(&h, &r, 1, "// note"), Some(Token::Comment));
         assert_eq!(tok_of(&h, &r, 1, "note"), Some(Token::Comment));
-        assert_eq!(tok_of(&h, &r, 2, "if"), Some(Token::Keyword));
-        assert_eq!(tok_of(&h, &r, 2, "return"), Some(Token::Keyword));
+        assert_eq!(tok_of(&h, &r, 2, "if"), Some(Token::Control));
+        assert_eq!(tok_of(&h, &r, 2, "return"), Some(Token::Control));
         assert_eq!(tok_of(&h, &r, 2, "1"), Some(Token::Number));
         // spans are sorted and non-overlapping
         for line in 0..r.len_lines() {
@@ -601,9 +618,23 @@ mod tests {
         assert_eq!(tok_of(&h, &r, 0, "def"), Some(Token::Storage));
         assert_eq!(tok_of(&h, &r, 0, "foo"), Some(Token::Function));
         assert_eq!(tok_of(&h, &r, 0, "a"), Some(Token::Parameter));
-        assert_eq!(tok_of(&h, &r, 1, "return"), Some(Token::Keyword));
+        assert_eq!(tok_of(&h, &r, 1, "return"), Some(Token::Control));
         assert_eq!(tok_of(&h, &r, 1, "s"), Some(Token::String));
         assert_eq!(tok_of(&h, &r, 1, "# c"), Some(Token::Comment));
+    }
+
+    #[test]
+    fn finer_classes() {
+        let (h, r) = hl_all("Rust", "/// doc\npub fn f<'a>(v: &'a Vec<u8>) -> bool {\n    self.len(); true\n}\n");
+        assert_eq!(tok_of(&h, &r, 0, "///"), Some(Token::DocComment));
+        assert_eq!(tok_of(&h, &r, 0, " doc"), Some(Token::DocComment));
+        assert_eq!(tok_of(&h, &r, 1, "pub"), Some(Token::Modifier));
+        assert_eq!(tok_of(&h, &r, 1, "'a"), Some(Token::Label));
+        assert_eq!(tok_of(&h, &r, 1, "Vec"), Some(Token::Builtin));
+        assert_eq!(tok_of(&h, &r, 1, "{"), Some(Token::Bracket));
+        assert_eq!(tok_of(&h, &r, 2, "self"), Some(Token::This));
+        assert_eq!(tok_of(&h, &r, 2, "len"), Some(Token::Call));
+        assert_eq!(tok_of(&h, &r, 2, "true"), Some(Token::Language));
     }
 
     #[test]

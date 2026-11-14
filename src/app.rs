@@ -15,7 +15,7 @@ use crate::pane::{Divider, Node, Pane};
 use crate::platform::{AppOptions, DialogResult, Effect, FrameOut};
 use crate::session::{self, SDoc, SNode, STab, Session};
 use crate::text::TextSystem;
-use crate::theme::{self, BgSpec, SyntaxColors, Theme, UiColors};
+use crate::theme::{self, BgSpec, SyntaxColors, SyntaxTheme, Theme, UiColors};
 use crate::ui::{Clip, Ctx, CursorKind, HitId, Input, Key, Mods};
 use crate::util::{smoothstep, Rgba, Smooth};
 use std::collections::HashMap;
@@ -33,6 +33,7 @@ pub(crate) struct Overlay {
     pub anim_id: u64,
     /// Theme to return to if a theme preview is cancelled.
     pub theme_before: usize,
+    pub syntax_before: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -80,6 +81,9 @@ pub struct App {
     pub(crate) cfg: Config,
     pub(crate) themes: Vec<Theme>,
     pub(crate) theme_idx: usize,
+    pub(crate) syntaxes: Vec<SyntaxTheme>,
+    /// 0 = the theme's own syntax colours, n = `syntaxes[n - 1]`.
+    pub(crate) syntax_sel: usize,
     pub(crate) fade: Option<Fade>,
     pub(crate) bg_phase: f32,
     pub(crate) docs: HashMap<DocId, Document>,
@@ -126,6 +130,11 @@ impl App {
         let (themes, theme_errs) = theme::load_all(Some(&config_dir().join("themes")));
         assert!(!themes.is_empty(), "no themes could be loaded");
         let theme_idx = themes.iter().position(|t| t.id == cfg.theme).unwrap_or(0);
+        let (syntaxes, syntax_errs) = theme::load_syntax(Some(&config_dir().join("syntax")));
+        let syntax_sel = match cfg.syntax.as_str() {
+            "theme" => 0,
+            id => syntaxes.iter().position(|s| s.id == id).map_or(if syntaxes.is_empty() { 0 } else { 1 }, |i| i + 1),
+        };
         let text = TextSystem::new(cfg.ligatures);
         let mut cx = Ctx::new(text, themes[theme_idx].ui.clone(), themes[theme_idx].syntax.clone());
         cx.anims_on = cfg.animations;
@@ -135,6 +144,8 @@ impl App {
             cfg,
             themes,
             theme_idx,
+            syntaxes,
+            syntax_sel,
             fade: None,
             bg_phase: 40.0,
             docs: HashMap::new(),
@@ -176,9 +187,10 @@ impl App {
         if let Some(e) = cfg_err {
             app.toast(3, e);
         }
-        for e in theme_errs {
+        for e in theme_errs.into_iter().chain(syntax_errs) {
             app.toast(3, e);
         }
+        app.cx.syn = app.syntax_colors();
         if opts.restore_session {
             app.restore_session();
         }
@@ -196,6 +208,14 @@ impl App {
 
     pub(crate) fn theme(&self) -> &Theme {
         &self.themes[self.theme_idx]
+    }
+
+    /// The syntax colours in effect: the chosen palette, or the theme's own.
+    pub(crate) fn syntax_colors(&self) -> SyntaxColors {
+        match self.syntax_sel.checked_sub(1).and_then(|i| self.syntaxes.get(i)) {
+            Some(s) => s.colors.clone(),
+            None => self.theme().syntax.clone(),
+        }
     }
 
     pub(crate) fn toast(&mut self, kind: u8, text: impl Into<String>) {
@@ -286,7 +306,8 @@ impl App {
             self.bg_phase += dt * speed;
         }
         let mut fading = false;
-        if let Some(f) = &mut self.fade {
+        let syn_to = self.fade.is_some().then(|| self.syntax_colors());
+        if let (Some(f), Some(syn_to)) = (&mut self.fade, syn_to) {
             if bg_on {
                 f.phase += dt * f.spec.speed;
             }
@@ -294,12 +315,12 @@ impl App {
             let e = smoothstep(f.t);
             let to = &self.themes[self.theme_idx];
             self.cx.ui = UiColors::lerp(&f.ui, &to.ui, e);
-            self.cx.syn = SyntaxColors::lerp(&f.syn, &to.syntax, e);
+            self.cx.syn = SyntaxColors::lerp(&f.syn, &syn_to, e);
             self.dirty = true;
             fading = true;
             if f.t >= 1.0 {
                 self.cx.ui = to.ui.clone();
-                self.cx.syn = to.syntax.clone();
+                self.cx.syn = syn_to;
                 self.fade = None;
             }
         }
@@ -1124,18 +1145,39 @@ impl App {
 
     // ------------------------------------------------------------ themes & config
 
+    /// Start a cross-fade from whatever is on screen right now.
+    fn begin_fade(&mut self) {
+        let th = self.theme();
+        let (spec, base, phase) = match &self.fade {
+            Some(f) if f.t < 0.5 => (f.spec.clone(), f.base, f.phase),
+            _ => (self.cfg.bg_for(th), th.ui.bg, self.bg_phase),
+        };
+        self.fade = Some(Fade { ui: self.cx.ui.clone(), syn: self.cx.syn.clone(), spec, base, phase, t: 0.0 });
+    }
+
+    /// Pick the syntax palette (0 = follow the theme).
+    pub(crate) fn set_syntax(&mut self, sel: usize, persist: bool) {
+        if sel > self.syntaxes.len() {
+            return;
+        }
+        if sel != self.syntax_sel {
+            self.begin_fade();
+            self.syntax_sel = sel;
+        }
+        let id = sel.checked_sub(1).map_or("theme".to_string(), |i| self.syntaxes[i].id.clone());
+        if persist && self.cfg.syntax != id {
+            self.cfg.syntax = id;
+            self.cfg_dirty = true;
+        }
+        self.dirty = true;
+    }
+
     pub(crate) fn set_theme(&mut self, idx: usize, persist: bool) {
         if idx >= self.themes.len() {
             return;
         }
         if idx != self.theme_idx {
-            let th = self.theme();
-            // fade from whatever is on screen right now
-            let (spec, base, phase) = match &self.fade {
-                Some(f) if f.t < 0.5 => (f.spec.clone(), f.base, f.phase),
-                _ => (self.cfg.bg_for(th), th.ui.bg, self.bg_phase),
-            };
-            self.fade = Some(Fade { ui: self.cx.ui.clone(), syn: self.cx.syn.clone(), spec, base, phase, t: 0.0 });
+            self.begin_fade();
             self.theme_idx = idx;
         }
         if persist && self.cfg.theme != self.themes[idx].id {
@@ -1158,20 +1200,24 @@ impl App {
 
     pub(crate) fn open_overlay(&mut self, ov: Ov) {
         let anim_id = self.id();
-        let theme_before = match &self.overlay {
-            Some(o) if !o.closing => o.theme_before,
-            _ => self.theme_idx,
+        let (theme_before, syntax_before) = match &self.overlay {
+            Some(o) if !o.closing => (o.theme_before, o.syntax_before),
+            _ => (self.theme_idx, self.syntax_sel),
         };
-        self.overlay = Some(Overlay { ov, closing: false, anim_id, theme_before });
+        self.overlay = Some(Overlay { ov, closing: false, anim_id, theme_before, syntax_before });
         self.dirty = true;
     }
 
     fn close_overlay(&mut self, revert_theme: bool) {
         if let Some(o) = &mut self.overlay {
             o.closing = true;
-            let (before, is_theme) = (o.theme_before, matches!(&o.ov, Ov::Palette(p) if p.mode == PalMode::Themes));
-            if revert_theme && is_theme {
+            let (before, syn_before) = (o.theme_before, o.syntax_before);
+            let mode = if let Ov::Palette(p) = &o.ov { Some(p.mode) } else { None };
+            if revert_theme && mode == Some(PalMode::Themes) {
                 self.set_theme(before, false);
+            }
+            if revert_theme && mode == Some(PalMode::Syntax) {
+                self.set_syntax(syn_before, false);
             }
         }
         self.dirty = true;
@@ -1226,6 +1272,11 @@ impl App {
                 let sel = langs.iter().position(|l| *l == cur).unwrap_or(0);
                 (langs.into_iter().map(|l| PalItem { label: l.clone(), detail: String::new(), act: PalAct::Lang(l) }).collect(), sel, "Set the language of this tab")
             }
+            PalMode::Syntax => {
+                let mut items = vec![PalItem { label: "Match theme".into(), detail: "the theme's own colours".into(), act: PalAct::Syntax(0) }];
+                items.extend(self.syntaxes.iter().enumerate().map(|(i, s)| PalItem { label: s.name.clone(), detail: String::new(), act: PalAct::Syntax(i + 1) }));
+                (items, self.syntax_sel, "Pick syntax colours")
+            }
             PalMode::Goto => (Vec::new(), 0, "Line number, or line:column"),
         };
         self.open_overlay(Ov::Palette(Palette::new(mode, items, selected, hint)));
@@ -1245,6 +1296,7 @@ impl App {
             PalAct::Theme(i) => {
                 self.set_theme(i, true);
             }
+            PalAct::Syntax(i) => self.set_syntax(i, true),
             PalAct::Lang(l) => {
                 if let Some((_, d)) = self.cur() {
                     d.hl.set_lang(&l);
@@ -1265,6 +1317,7 @@ impl App {
                 self.run_act(act);
             }
             OverlayEvent::Preview(PalAct::Theme(i)) => self.set_theme(i, false),
+            OverlayEvent::Preview(PalAct::Syntax(i)) => self.set_syntax(i, false),
             OverlayEvent::Preview(_) => {}
             OverlayEvent::Goto(s) => {
                 self.close_overlay(false);
@@ -1690,6 +1743,7 @@ impl App {
             Cmd::Palette => self.open_palette(PalMode::Commands),
             Cmd::QuickOpen => self.open_palette(PalMode::Files),
             Cmd::Themes => self.open_palette(PalMode::Themes),
+            Cmd::SyntaxColors => self.open_palette(PalMode::Syntax),
             Cmd::Languages => self.open_palette(PalMode::Langs),
             Cmd::Settings => self.open_overlay(Ov::Settings(Settings::new())),
             Cmd::SplitRight => self.split(true),
@@ -1776,6 +1830,11 @@ impl App {
                 let sample = dir.join("themes").join("example-theme.toml.sample");
                 if !sample.exists() {
                     let _ = std::fs::write(&sample, theme::EXAMPLE_THEME);
+                }
+                let _ = std::fs::create_dir_all(dir.join("syntax"));
+                let sample = dir.join("syntax").join("example-syntax.toml.sample");
+                if !sample.exists() {
+                    let _ = std::fs::write(&sample, theme::EXAMPLE_SYNTAX);
                 }
                 if !Config::path().exists() && self.write_config {
                     let _ = self.cfg.save();

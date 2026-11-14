@@ -79,6 +79,20 @@ palette!(SyntaxColors, RawSyntax {
     inserted = "#6ff0a0",
     deleted = "#ff6a7a",
     invalid = "#ff4d6a",
+    // finer classes; when a file leaves these out they follow a broader one
+    control = "#ffffff",
+    call = "#ffffff",
+    builtin = "#ffffff",
+    language = "#ffffff",
+    this = "#ffffff",
+    modifier = "#ffffff",
+    label = "#ffffff",
+    bracket = "#ffffff",
+    doc_comment = "#ffffff",
+    regex = "#ffffff",
+    quote = "#ffffff",
+    code = "#ffffff",
+    list_marker = "#ffffff",
 });
 
 /// Syntax token classes produced by the highlighter.
@@ -112,6 +126,19 @@ pub enum Token {
     Inserted,
     Deleted,
     Invalid,
+    Control,
+    Call,
+    Builtin,
+    Language,
+    This,
+    Modifier,
+    Label,
+    Bracket,
+    DocComment,
+    Regex,
+    Quote,
+    Code,
+    ListMarker,
 }
 
 impl SyntaxColors {
@@ -141,13 +168,26 @@ impl SyntaxColors {
             Token::Inserted => self.inserted,
             Token::Deleted => self.deleted,
             Token::Invalid => self.invalid,
+            Token::Control => self.control,
+            Token::Call => self.call,
+            Token::Builtin => self.builtin,
+            Token::Language => self.language,
+            Token::This => self.this,
+            Token::Modifier => self.modifier,
+            Token::Label => self.label,
+            Token::Bracket => self.bracket,
+            Token::DocComment => self.doc_comment,
+            Token::Regex => self.regex,
+            Token::Quote => self.quote,
+            Token::Code => self.code,
+            Token::ListMarker => self.list_marker,
         }
     }
 }
 
 impl Token {
     pub fn italic(self) -> bool {
-        matches!(self, Token::Comment | Token::Emphasis)
+        matches!(self, Token::Comment | Token::DocComment | Token::Emphasis | Token::Quote | Token::This)
     }
     pub fn bold(self) -> bool {
         matches!(self, Token::Strong | Token::Heading)
@@ -253,6 +293,121 @@ pub struct Theme {
     pub bg: BgSpec,
 }
 
+impl SyntaxColors {
+    /// Build from a `[syntax]` table. Anything left out follows a broader
+    /// class (`control` follows `keyword`, `call` follows `function`, …).
+    fn resolve(r: &RawSyntax, text: Option<Rgba>) -> SyntaxColors {
+        let mut c = SyntaxColors::from_raw(r);
+        if let (None, Some(t)) = (&r.text, text) {
+            c.text = t;
+        }
+        if r.variable.is_none() {
+            c.variable = c.text;
+        }
+        if r.control.is_none() {
+            c.control = c.keyword;
+        }
+        if r.call.is_none() {
+            c.call = c.function;
+        }
+        if r.builtin.is_none() {
+            c.builtin = c.r#type;
+        }
+        if r.language.is_none() {
+            c.language = c.constant;
+        }
+        if r.this.is_none() {
+            c.this = c.constant;
+        }
+        if r.modifier.is_none() {
+            c.modifier = c.storage;
+        }
+        if r.label.is_none() {
+            c.label = c.constant;
+        }
+        if r.bracket.is_none() {
+            c.bracket = c.punctuation;
+        }
+        if r.doc_comment.is_none() {
+            c.doc_comment = c.comment;
+        }
+        if r.regex.is_none() {
+            c.regex = c.string;
+        }
+        if r.quote.is_none() {
+            c.quote = c.comment;
+        }
+        if r.code.is_none() {
+            c.code = c.string;
+        }
+        if r.list_marker.is_none() {
+            c.list_marker = c.operator;
+        }
+        c
+    }
+}
+
+/// A set of syntax colours that can be picked independently of the theme.
+#[derive(Clone, Debug)]
+pub struct SyntaxTheme {
+    pub id: String,
+    pub name: String,
+    pub colors: SyntaxColors,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawSyntaxTheme {
+    name: Option<String>,
+    syntax: RawSyntax,
+}
+
+impl SyntaxTheme {
+    pub fn parse(id: &str, src: &str) -> Result<SyntaxTheme, String> {
+        let raw: RawSyntaxTheme = toml::from_str(src).map_err(|e| e.to_string())?;
+        Ok(SyntaxTheme { id: id.to_string(), name: raw.name.unwrap_or_else(|| id.to_string()), colors: SyntaxColors::resolve(&raw.syntax, None) })
+    }
+}
+
+const BUILTIN_SYNTAX: &[(&str, &str)] = &[
+    ("cyberpunk", include_str!("../assets/syntax/cyberpunk.toml")),
+    ("outrun", include_str!("../assets/syntax/outrun.toml")),
+    ("candy", include_str!("../assets/syntax/candy.toml")),
+    ("ice", include_str!("../assets/syntax/ice.toml")),
+];
+
+/// Built-in syntax palettes, then the user's (`~/.config/glint/syntax/*.toml`).
+pub fn load_syntax(user_dir: Option<&Path>) -> (Vec<SyntaxTheme>, Vec<String>) {
+    let mut out: Vec<SyntaxTheme> = Vec::new();
+    let mut errors = Vec::new();
+    for (id, src) in BUILTIN_SYNTAX {
+        match SyntaxTheme::parse(id, src) {
+            Ok(t) => out.push(t),
+            Err(e) => errors.push(format!("built-in syntax palette {id}: {e}")),
+        }
+    }
+    if let Some(rd) = user_dir.and_then(|d| std::fs::read_dir(d).ok()) {
+        let mut paths: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for p in paths {
+            if p.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let Some(id) = p.file_stem().and_then(|s| s.to_str()) else { continue };
+            match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| SyntaxTheme::parse(id, &s)) {
+                Ok(t) => match out.iter_mut().find(|x| x.id == t.id) {
+                    Some(existing) => *existing = t,
+                    None => out.push(t),
+                },
+                Err(e) => errors.push(format!("syntax palette {}: {e}", p.display())),
+            }
+        }
+    }
+    (out, errors)
+}
+
+pub const EXAMPLE_SYNTAX: &str = include_str!("../assets/syntax/cyberpunk.toml");
+
 pub fn knob_key(name: &str) -> String {
     name.to_ascii_lowercase().replace(' ', "_")
 }
@@ -261,14 +416,7 @@ impl Theme {
     pub fn parse(id: &str, src: &str) -> Result<Theme, String> {
         let raw: RawTheme = toml::from_str(src).map_err(|e| e.to_string())?;
         let ui = UiColors::from_raw(&raw.ui);
-        let mut syntax = SyntaxColors::from_raw(&raw.syntax);
-        // Unspecified text-ish syntax colours follow the UI text colour.
-        if raw.syntax.text.is_none() {
-            syntax.text = ui.text;
-        }
-        if raw.syntax.variable.is_none() {
-            syntax.variable = syntax.text;
-        }
+        let syntax = SyntaxColors::resolve(&raw.syntax, Some(ui.text));
         let kind = raw
             .background
             .kind

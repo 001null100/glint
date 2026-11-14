@@ -46,6 +46,8 @@ pub struct BgOverride {
 #[serde(default)]
 pub struct Config {
     pub theme: String,
+    /// Syntax colour palette id, or "theme" to use the theme's own colours.
+    pub syntax: String,
     /// Editor font size in logical pixels.
     pub font_size: f32,
     /// Line height as a multiple of the font size.
@@ -73,6 +75,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             theme: "aurora".into(),
+            syntax: "cyberpunk".into(),
             font_size: 14.0,
             line_height: 1.55,
             ligatures: false,

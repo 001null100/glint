@@ -17,6 +17,7 @@ pub enum PalMode {
     Commands,
     Files,
     Themes,
+    Syntax,
     Langs,
     Goto,
 }
@@ -27,6 +28,8 @@ pub enum PalAct {
     Tab { pane: u64, idx: usize },
     Path(std::path::PathBuf),
     Theme(usize),
+    /// 0 = follow the theme, n = the n-th syntax palette.
+    Syntax(usize),
     Lang(String),
 }
 

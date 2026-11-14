@@ -306,7 +306,7 @@ fn draw_welcome(cx: &mut crate::ui::Ctx, body: Rect) {
     let title_w = cx.label_w("glint", big, true);
     let star_w = cx.label_w("✦", big * 0.7, false);
     let total = title_w + star_w + cx.px(14.0);
-    let rows = [("Ctrl+N", "New tab"), ("Ctrl+O", "Open a file"), ("Ctrl+Shift+P", "All commands"), ("Ctrl+T", "Themes")];
+    let rows = [("Ctrl+N", "New tab"), ("Ctrl+O", "Open a file"), ("Ctrl+Shift+P", "All commands"), ("Ctrl+Shift+T", "Themes")];
     let row_h = cx.px(30.0);
     let block_h = TextSystem::label_h(big) + cx.px(40.0) + rows.len() as f32 * row_h;
     let mut y = body.cy() - block_h * 0.5 + (1.0 - a) * cx.px(14.0);

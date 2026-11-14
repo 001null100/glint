@@ -1,0 +1,47 @@
+# Glint syntax palette. Chosen independently of the theme (Ctrl+Shift+C).
+# Copy to ~/.config/glint/syntax/<name>.toml to make your own. Every key is
+# optional: the finer classes fall back to a broader one (control -> keyword,
+# call -> function, builtin -> type, language/this/label -> constant,
+# modifier -> storage, bracket -> punctuation, doc_comment/quote -> comment,
+# regex/code -> string, list_marker -> operator).
+
+name = "Cyberpunk"   # Neon yellow, cyan and magenta on black.
+
+[syntax]
+text = "#eaf6ff"
+comment = "#7c8fbf"
+doc_comment = "#9fb4e8"
+string = "#00ff9f"
+escape = "#fcee0a"
+regex = "#ffb454"
+number = "#ff9e3d"
+constant = "#ffb454"
+language = "#ff5cf4"
+keyword = "#ff2a6d"
+control = "#fcee0a"
+storage = "#ff2a6d"
+modifier = "#ff7a45"
+operator = "#ff79c6"
+function = "#00e5ff"
+call = "#7df3ff"
+builtin = "#5ea8ff"
+type = "#c77dff"
+namespace = "#9d8cff"
+variable = "#eaf6ff"
+parameter = "#ffd6a5"
+property = "#9ad1ff"
+this = "#ff5cf4"
+label = "#c8ff00"
+punctuation = "#8f9bb3"
+bracket = "#b8c4ff"
+macro = "#c8ff00"
+tag = "#ff2a6d"
+attribute = "#fcee0a"
+heading = "#00e5ff"
+link = "#5ea8ff"
+quote = "#9fb4e8"
+code = "#00ff9f"
+list_marker = "#ff5cf4"
+inserted = "#00ff9f"
+deleted = "#ff2a6d"
+invalid = "#ff0033"
