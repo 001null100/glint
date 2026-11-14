@@ -1,0 +1,52 @@
+name = "Void"
+
+[ui]
+bg = "#040404"
+panel = "#0a0a0ac8"
+editor = "#040404b8"
+popup = "#0e0e0ef0"
+text = "#f5f5f5"
+text_dim = "#a0a0a0"
+text_faint = "#5c5c5c"
+accent = "#ffffff"
+accent2 = "#e8c890"
+selection = "#ffffff2a"
+line = "#ffffff0a"
+cursor = "#ffffff"
+border = "#ffffff16"
+find = "#e8c89038"
+find_current = "#e8c890a0"
+
+[syntax]
+comment = "#5e5e5e"
+string = "#e8c890"
+escape = "#f0d8b0"
+number = "#e8c890"
+constant = "#d8d8d8"
+keyword = "#ffffff"
+storage = "#c4c4c4"
+operator = "#b0b0b0"
+function = "#d0e4f0"
+type = "#c8d4dc"
+parameter = "#e8e8e8"
+property = "#d4d4d4"
+punctuation = "#808080"
+tag = "#ffffff"
+attribute = "#e8c890"
+namespace = "#c8d4dc"
+macro = "#f0d8b0"
+heading = "#ffffff"
+link = "#d0e4f0"
+
+[background]
+kind = "contour"
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#ffffff", "#8090a0", "#e8c890", "#101010"]
+
+[background.knobs]
+lines = 0.5
+thickness = 0.4
+drift = 0.5
+shimmer = 0.5

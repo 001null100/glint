@@ -1,0 +1,52 @@
+name = "Cascade"
+
+[ui]
+bg = "#010502"
+panel = "#040b06c8"
+editor = "#010502cc"
+popup = "#06100aee"
+text = "#eaffee"
+text_dim = "#8fb89a"
+text_faint = "#4c7a58"
+accent = "#3dff7a"
+accent2 = "#b6ff5a"
+selection = "#3dff7a33"
+line = "#a0ffc00b"
+cursor = "#c8ffd8"
+border = "#b0ffc818"
+find = "#ffe07a38"
+find_current = "#ffe07a96"
+
+[syntax]
+comment = "#4c7a58"
+string = "#d8ff8a"
+escape = "#ffe07a"
+number = "#ffe07a"
+constant = "#ffb0d0"
+keyword = "#5dff9a"
+storage = "#3de0b0"
+operator = "#a8d0b4"
+function = "#8affd6"
+type = "#5fd0ff"
+parameter = "#e8ffd0"
+property = "#a8f0c8"
+punctuation = "#7aa888"
+tag = "#5dff9a"
+attribute = "#d8ff8a"
+namespace = "#a0e8ff"
+macro = "#ffe07a"
+heading = "#8affd6"
+link = "#5fd0ff"
+
+[background]
+kind = "rain"
+intensity = 0.85
+speed = 1.0
+scale = 1.0
+colors = ["#22e060", "#d8ffe4", "#0a7a3a", "#03200c"]
+
+[background.knobs]
+density = 0.7
+trail = 0.5
+flicker = 0.5
+head_glow = 0.45

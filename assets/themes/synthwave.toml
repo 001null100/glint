@@ -1,0 +1,52 @@
+name = "Synthwave"
+
+[ui]
+bg = "#06020e"
+panel = "#0c0518c8"
+editor = "#06020ec4"
+popup = "#110822ee"
+text = "#fdf3ff"
+text_dim = "#b29cc9"
+text_faint = "#6a5a8c"
+accent = "#ff3fa4"
+accent2 = "#29e0ff"
+selection = "#ff3fa438"
+line = "#ffb8f00c"
+cursor = "#29e0ff"
+border = "#f0c0ff1a"
+find = "#ffe66d38"
+find_current = "#ffe66d96"
+
+[syntax]
+comment = "#6a5a8c"
+string = "#ffe66d"
+escape = "#ff9e64"
+number = "#ff9e64"
+constant = "#ff8ad8"
+keyword = "#ff5fb7"
+storage = "#d87aff"
+operator = "#c8b4e0"
+function = "#36f1ff"
+type = "#b88cff"
+parameter = "#ffe0f0"
+property = "#8adcff"
+punctuation = "#9a88b8"
+tag = "#ff5fb7"
+attribute = "#ffe66d"
+namespace = "#8af0e0"
+macro = "#ffb86b"
+heading = "#36f1ff"
+link = "#29e0ff"
+
+[background]
+kind = "grid"
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#ff2fa0", "#ffb03a", "#ff3f7f", "#22e0ff"]
+
+[background.knobs]
+horizon = 0.42
+sun = 0.5
+stars = 0.5
+haze = 0.5

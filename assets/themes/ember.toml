@@ -1,0 +1,52 @@
+name = "Ember"
+
+[ui]
+bg = "#090403"
+panel = "#110806c8"
+editor = "#090403bc"
+popup = "#160b08ee"
+text = "#fff1e6"
+text_dim = "#c2a392"
+text_faint = "#7a5f52"
+accent = "#ff7a2f"
+accent2 = "#ffcf5a"
+selection = "#ff7a2f38"
+line = "#ffc8a00c"
+cursor = "#ffd9a8"
+border = "#ffd0b018"
+find = "#7fd6c238"
+find_current = "#7fd6c296"
+
+[syntax]
+comment = "#7d6558"
+string = "#f5d76e"
+escape = "#ffab70"
+number = "#c9a0ff"
+constant = "#7fd6c2"
+keyword = "#ff7a45"
+storage = "#ff9a6a"
+operator = "#d6b8a8"
+function = "#ffc9a3"
+type = "#ff5d73"
+parameter = "#ffe6c8"
+property = "#ffb89a"
+punctuation = "#a8897a"
+tag = "#ff5d73"
+attribute = "#f5d76e"
+namespace = "#e8c8a0"
+macro = "#ffcf5a"
+heading = "#ff7a45"
+link = "#ffab70"
+
+[background]
+kind = "embers"
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#ffb347", "#ff4a1c", "#ffe9a8", "#2a0c06"]
+
+[background.knobs]
+density = 0.5
+sway = 0.5
+floor_glow = 0.6
+size = 0.5

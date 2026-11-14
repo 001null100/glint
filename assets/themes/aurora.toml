@@ -1,0 +1,60 @@
+# Glint theme file.
+# Colours are #rrggbb or #rrggbbaa. Every key is optional; anything left out
+# falls back to a sensible default. Copy this file to
+# ~/.config/glint/themes/<name>.toml to make your own theme.
+
+name = "Aurora"
+
+[ui]
+bg = "#03060b"            # base colour the background builds on
+panel = "#070c14c4"       # tab strip / status bar tint over the blurred backdrop
+editor = "#03060bb0"      # veil behind the text (alpha = how much it dims)
+popup = "#0a1019ec"       # palette, find bar, dialogs
+text = "#e9f3ff"
+text_dim = "#8fa3bd"
+text_faint = "#4f5f78"
+accent = "#5ef0c0"
+accent2 = "#9d7bff"
+selection = "#5ef0c036"
+line = "#9fd8ff0d"        # current line highlight
+cursor = "#b9ffe8"
+border = "#b4dcff18"
+find = "#ffd27a3a"
+find_current = "#ffd27a9c"
+good = "#6ff0a0"
+warn = "#ffcf6a"
+bad = "#ff6a7a"
+
+[syntax]
+comment = "#5a6d88"
+string = "#8ff2b3"
+escape = "#ffc98a"
+number = "#ffb86b"
+constant = "#ff9bd0"
+keyword = "#c391ff"
+storage = "#a99bff"
+operator = "#a9c0da"
+function = "#6fd6ff"
+type = "#5ef0c0"
+parameter = "#ffdcae"
+property = "#a4d4ff"
+punctuation = "#8798b2"
+tag = "#ff8fa8"
+attribute = "#ffd27a"
+namespace = "#9fe8d8"
+macro = "#ffcf6a"
+heading = "#6fd6ff"
+link = "#7ab8ff"
+
+[background]
+kind = "aurora"           # plain, aurora, starfield, nebula, embers, grid, rain, abyss, contour
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#2df5a8", "#8a5cff", "#27b8ff", "#061426"]
+
+[background.knobs]        # 0..1 each; names depend on the kind
+curtains = 0.6
+rays = 0.5
+height = 0.55
+stars = 0.5

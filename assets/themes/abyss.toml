@@ -1,0 +1,52 @@
+name = "Abyss"
+
+[ui]
+bg = "#01060c"
+panel = "#040c16c8"
+editor = "#01060cac"
+popup = "#07121eee"
+text = "#e6f7ff"
+text_dim = "#8aa8bd"
+text_faint = "#4a657a"
+accent = "#2fd4ff"
+accent2 = "#5a8cff"
+selection = "#2fd4ff33"
+line = "#a0e0ff0c"
+cursor = "#c0f4ff"
+border = "#a8e0ff18"
+find = "#ffc27a38"
+find_current = "#ffc27a96"
+
+[syntax]
+comment = "#4f6a80"
+string = "#7fe8d0"
+escape = "#ffc27a"
+number = "#ffc27a"
+constant = "#ff9eb8"
+keyword = "#5ab0ff"
+storage = "#7a9cff"
+operator = "#a4c0d4"
+function = "#b0e8ff"
+type = "#4fd8ff"
+parameter = "#e0f0d8"
+property = "#9cc8f0"
+punctuation = "#7a96aa"
+tag = "#5ab0ff"
+attribute = "#7fe8d0"
+namespace = "#a0f0e0"
+macro = "#ffd08a"
+heading = "#4fd8ff"
+link = "#5ab0ff"
+
+[background]
+kind = "abyss"
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#1fb8e0", "#3ff0d0", "#c8f4ff", "#0a3050"]
+
+[background.knobs]
+light_rays = 0.6
+caustics = 0.5
+particles = 0.5
+depth = 0.5

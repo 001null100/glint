@@ -1,0 +1,52 @@
+name = "Nebula"
+
+[ui]
+bg = "#07030d"
+panel = "#0d0716c8"
+editor = "#07030db4"
+popup = "#120a1eee"
+text = "#f6ecff"
+text_dim = "#a893c2"
+text_faint = "#66547f"
+accent = "#ff6ad5"
+accent2 = "#8a6bff"
+selection = "#ff6ad533"
+line = "#e8b8ff0c"
+cursor = "#ffc4f0"
+border = "#e6c0ff18"
+find = "#7ae8ff38"
+find_current = "#7ae8ff96"
+
+[syntax]
+comment = "#6b5a85"
+string = "#ffcf8a"
+escape = "#ffa27a"
+number = "#ffa27a"
+constant = "#7ae8ff"
+keyword = "#ff7ad9"
+storage = "#d28aff"
+operator = "#c4b2dc"
+function = "#a394ff"
+type = "#6fe6ff"
+parameter = "#ffe0c0"
+property = "#d4b8ff"
+punctuation = "#9886b5"
+tag = "#ff7ad9"
+attribute = "#ffcf8a"
+namespace = "#9fe8e0"
+macro = "#ffb86b"
+heading = "#ff7ad9"
+link = "#a394ff"
+
+[background]
+kind = "nebula"
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#c32fd0", "#3b49e0", "#ff5f9e", "#12052a"]
+
+[background.knobs]
+warp = 0.6
+contrast = 0.5
+stars = 0.4
+detail = 0.6

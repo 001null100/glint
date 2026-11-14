@@ -1,0 +1,52 @@
+name = "Deep Space"
+
+[ui]
+bg = "#020309"
+panel = "#060812c8"
+editor = "#020309a8"
+popup = "#090c18ee"
+text = "#eef1ff"
+text_dim = "#939bbd"
+text_faint = "#525a7c"
+accent = "#7aa7ff"
+accent2 = "#ffd27a"
+selection = "#7aa7ff3a"
+line = "#aebcff0c"
+cursor = "#ffffff"
+border = "#b8c4ff18"
+find = "#ffd27a3a"
+find_current = "#ffd27a9c"
+
+[syntax]
+comment = "#565f88"
+string = "#ffd98f"
+escape = "#ffb37a"
+number = "#ff9e7a"
+constant = "#ff9ecb"
+keyword = "#8fa8ff"
+storage = "#a394ff"
+operator = "#b0bbdc"
+function = "#7fe0ff"
+type = "#c4a8ff"
+parameter = "#ffe3b8"
+property = "#a8c8ff"
+punctuation = "#8a93b8"
+tag = "#ff9ecb"
+attribute = "#ffd98f"
+namespace = "#9fe0e8"
+macro = "#ffc27a"
+heading = "#7fe0ff"
+link = "#7aa7ff"
+
+[background]
+kind = "starfield"
+intensity = 1.0
+speed = 1.0
+scale = 1.0
+colors = ["#dfe8ff", "#3a58d8", "#8a3fc8", "#ffd9a0"]
+
+[background.knobs]
+density = 0.6
+twinkle = 0.6
+nebula = 0.5
+shooting_stars = 0.5
