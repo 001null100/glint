@@ -16,6 +16,8 @@ struct SceneP {
 
 struct U {
     res: vec4<f32>,  // width, height, fade, unused
+    // typing pulses: x, y (0..1 of the window, y down), age in seconds, strength
+    p: array<vec4<f32>, 4>,
     sa: SceneP,
     sb: SceneP,
 };
@@ -358,10 +360,32 @@ fn scene_contour(uv: vec2<f32>, S: SceneP) -> vec3<f32> {
 
 // ---------------------------------------------------------------- main
 
-fn render(frag: vec2<f32>, S: SceneP) -> vec3<f32> {
+fn render(frag0: vec2<f32>, S: SceneP) -> vec3<f32> {
     let res = u.res.xy;
-    var uv = (frag - 0.5 * res) / res.y;
+    var uv = (frag0 - 0.5 * res) / res.y;
     uv.y = -uv.y;
+
+    // A keystroke sends a ring out from the caret. It bends the scene as it
+    // passes and lifts the light there, so every scene answers in its own way.
+    var warp = vec2<f32>(0.0);
+    var glow = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let p = u.p[i];
+        if p.w <= 0.0 {
+            continue;
+        }
+        var c = (p.xy * res - 0.5 * res) / res.y;
+        c.y = -c.y;
+        let d = uv - c;
+        let r = length(d);
+        let life = exp(-p.z * 3.4) * p.w;
+        let x = (r - 0.02 - p.z * 0.6) * 17.0;
+        let ring = exp(-x * x);
+        warp += d / (r + 0.001) * ring * life * 0.035;
+        glow += (ring + exp(-r * r * 120.0) * exp(-p.z * 6.0) * 0.7) * life;
+    }
+    uv -= warp;
+    let frag = frag0 - vec2<f32>(warp.x, -warp.y) * res.y;
     let kind = i32(S.a.w + 0.5);
     var col: vec3<f32>;
     switch kind {
@@ -375,7 +399,10 @@ fn render(frag: vec2<f32>, S: SceneP) -> vec3<f32> {
         case 8 { col = scene_contour(uv, S); }
         default { col = scene_plain(uv, S); }
     }
-    return col;
+    // lift what is there, and add a little of the scene's own colour so the
+    // ring also shows where the scene is nearly black
+    let tint = mix(S.c0.rgb, S.c1.rgb, 0.6);
+    return col * (1.0 + glow * 2.2) + tint * glow * 0.9;
 }
 
 @fragment

@@ -57,6 +57,10 @@ pub struct Config {
     /// Show Markdown files rendered, with raw text only on the caret line.
     pub md_preview: bool,
     pub tab_width: usize,
+    /// Close brackets and quotes as they are typed.
+    pub auto_pairs: bool,
+    pub indent_guides: bool,
+    pub line_highlight: bool,
     pub cursor_blink: bool,
     pub animations: bool,
 
@@ -65,6 +69,8 @@ pub struct Config {
     /// Multiplier on each background's internal resolution (0.25..1).
     pub bg_quality: f32,
     pub bg_pause_unfocused: bool,
+    /// How strongly the background answers typing (0 = not at all).
+    pub reactivity: f32,
     /// How strongly the editor dims the background behind text (0..1.5).
     pub dim: f32,
     pub vignette: f32,
@@ -84,12 +90,16 @@ impl Default for Config {
             wrap: true,
             md_preview: true,
             tab_width: 4,
+            auto_pairs: true,
+            indent_guides: true,
+            line_highlight: true,
             cursor_blink: true,
             animations: true,
             bg_animate: true,
             bg_fps: 30,
             bg_quality: 1.0,
             bg_pause_unfocused: true,
+            reactivity: 0.5,
             dim: 1.0,
             vignette: 0.35,
             bg: BTreeMap::new(),

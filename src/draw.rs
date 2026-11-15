@@ -109,6 +109,8 @@ impl App {
                         md: self.cfg.md_preview && doc.is_markdown(),
                         // catch up faster on big files while the user is idle
                         hl_budget_ms: if self.now - self.last_input > 0.2 { 11 } else { 4 },
+                        line_highlight: self.cfg.line_highlight,
+                        indent_guides: self.cfg.indent_guides,
                     },
                 );
                 drew = true;
@@ -175,8 +177,25 @@ impl App {
             let line = d.buf.line_of(head);
             let col = head - d.buf.line_start(line);
             let mut pos = format!("Ln {}, Col {}", line + 1, col + 1);
-            if !v.sel.is_empty() {
+            if !v.extra.is_empty() {
+                pos = format!("{} cursors", v.extra.len() + 1);
+            } else if !v.sel.is_empty() {
                 pos.push_str(&format!(" ({} selected)", v.sel.end() - v.sel.start()));
+            }
+            // word count: always for prose, for code only of a selection
+            let picked: usize = v
+                .all_sels()
+                .iter()
+                .filter(|s| !s.is_empty() && s.end() - s.start() < 2_000_000)
+                .map(|s| crate::doc::count_words(d.buf.rope.slice(s.start()..s.end().min(d.buf.len())).chunks()))
+                .sum();
+            let plural = |n: usize| if n == 1 { "word" } else { "words" };
+            if d.is_prose() {
+                if let Some(total) = d.word_count() {
+                    items.push((6, if picked > 0 { format!("{} of {} {}", group(picked), group(total), plural(total)) } else { format!("{} {}", group(total), plural(total)) }));
+                }
+            } else if picked > 0 {
+                items.push((6, format!("{} {}", group(picked), plural(picked))));
             }
             items.push((0, pos));
             items.push((1, if self.cfg.wrap { "Wrap".into() } else { "No wrap".into() }));
@@ -300,6 +319,19 @@ impl App {
 }
 
 /// Shown in a pane with no tabs.
+/// 1234567 -> "1,234,567".
+fn group(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn draw_welcome(cx: &mut crate::ui::Ctx, body: Rect) {
     let t = cx.anim_from(hash_str("welcome") ^ (body.x as u64) << 8, 0.0, 1.0, 5.0);
     let a = ease_out_cubic(t);

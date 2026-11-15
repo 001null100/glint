@@ -51,6 +51,26 @@ pub struct Document {
     /// Markdown line kinds (see `md::scan`), valid for `md_rev`.
     pub md_kinds: Vec<u8>,
     md_rev: u64,
+    /// Cached word count: (buffer rev, words).
+    words: std::cell::Cell<(u64, usize)>,
+}
+
+/// Documents larger than this (in chars) get no live word count.
+const MAX_COUNTED: usize = 8_000_000;
+
+/// Words in `chunks` of text: runs of non-whitespace characters.
+pub fn count_words<'a>(chunks: impl Iterator<Item = &'a str>) -> usize {
+    let (mut n, mut inside) = (0, false);
+    for chunk in chunks {
+        for c in chunk.chars() {
+            let w = !c.is_whitespace();
+            if w && !inside {
+                n += 1;
+            }
+            inside = w;
+        }
+    }
+    n
 }
 
 const MAX_FILE: u64 = 256 * 1024 * 1024;
@@ -114,6 +134,7 @@ impl Document {
             edited_at: 0.0,
             md_kinds: Vec::new(),
             md_rev: u64::MAX,
+            words: std::cell::Cell::new((u64::MAX, 0)),
         }
     }
 
@@ -167,6 +188,25 @@ impl Document {
             self.md_kinds = crate::md::scan(&self.buf.rope);
             self.md_rev = self.buf.rev;
         }
+    }
+
+    /// Whether this is prose rather than code (word counts, no indent guides).
+    pub fn is_prose(&self) -> bool {
+        matches!(self.hl.lang(), "Markdown" | "Plain Text")
+    }
+
+    /// Words in the document, or None when it is too large to keep counting.
+    pub fn word_count(&self) -> Option<usize> {
+        if self.buf.len() > MAX_COUNTED {
+            return None;
+        }
+        let (rev, n) = self.words.get();
+        if rev == self.buf.rev {
+            return Some(n);
+        }
+        let n = count_words(self.buf.rope.chunks());
+        self.words.set((self.buf.rev, n));
+        Some(n)
     }
 
     pub fn title(&self) -> String {

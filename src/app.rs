@@ -6,7 +6,7 @@ use crate::buffer::{EditKind, Sel};
 use crate::cmd::{keymap, Cmd};
 use crate::config::{config_dir, Config};
 use crate::doc::{DiskState, DocId, Document};
-use crate::editor::{self, Reveal, View};
+use crate::editor::{self, Cur, Reveal, View};
 use crate::find::{self, FindBar};
 use crate::gfx::{BgFrame, SceneRaw};
 use crate::highlight::{all_langs, comment_tokens};
@@ -20,6 +20,37 @@ use crate::ui::{Clip, Ctx, CursorKind, HitId, Input, Key, Mods};
 use crate::util::{smoothstep, Rgba, Smooth};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+fn files_path() -> PathBuf {
+    crate::config::data_dir().join("files.json")
+}
+
+/// How long a typing pulse stays alive in the background.
+const PULSE_SECS: f64 = 1.3;
+
+/// Upper bound on simultaneous cursors.
+const MAX_CURSORS: usize = 2000;
+
+/// Occurrences of `needle` as char ranges, starting at `from` and wrapping
+/// round to the start of the document. At most `max` are returned.
+fn occurrences(buf: &crate::buffer::Buffer, needle: &str, from: usize, max: usize) -> Vec<(usize, usize)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let text = buf.text();
+    let n = needle.chars().count();
+    let start = buf.rope.char_to_byte(from.min(buf.len()));
+    let after = text[start..].match_indices(needle).map(|(i, _)| i + start);
+    let before = text[..start].match_indices(needle).map(|(i, _)| i);
+    after
+        .chain(before)
+        .take(max)
+        .map(|b| {
+            let a = buf.rope.byte_to_char(b);
+            (a, a + n)
+        })
+        .collect()
+}
 
 pub(crate) enum Ov {
     Palette(Palette),
@@ -45,6 +76,8 @@ pub(crate) enum Kb {
 pub(crate) enum Drag {
     /// mode: 1 = by character, 2 = by word, 3 = by line.
     Select { pane: u64, mode: u8, origin: (usize, usize) },
+    /// Alt+drag column selection from (line, cell column).
+    Column { pane: u64, line: usize, col: usize },
     Scrollbar { pane: u64, grab: f32 },
     Divider { id: u32 },
     Tab { pane: u64, idx: usize, grab: f32, x0: f32, moved: bool },
@@ -86,6 +119,9 @@ pub struct App {
     pub(crate) syntax_sel: usize,
     pub(crate) fade: Option<Fade>,
     pub(crate) bg_phase: f32,
+    /// Typing pulses for the background: x, y in window pixels, start time, strength.
+    pulses: [(f32, f32, f64, f32); 4],
+    pulse_i: usize,
     pub(crate) docs: HashMap<DocId, Document>,
     pub(crate) panes: HashMap<u64, Pane>,
     pub(crate) tree: Node,
@@ -108,6 +144,9 @@ pub struct App {
     pub(crate) window_focused: bool,
     closed: Vec<Closed>,
     recent: Vec<PathBuf>,
+    /// What the file finder has learned, and its index of the home folder.
+    files: crate::files::Store,
+    file_index: Option<std::sync::Arc<crate::files::Index>>,
     session_dirty: bool,
     session_saved_at: f64,
     cfg_dirty: bool,
@@ -148,6 +187,8 @@ impl App {
             syntax_sel,
             fade: None,
             bg_phase: 40.0,
+            pulses: [(0.0, 0.0, -100.0, 0.0); 4],
+            pulse_i: 0,
             docs: HashMap::new(),
             panes: HashMap::new(),
             tree: Node::Leaf(1),
@@ -170,6 +211,8 @@ impl App {
             window_focused: true,
             closed: Vec::new(),
             recent: Vec::new(),
+            files: if opts.restore_session { crate::files::Store::load(&files_path()) } else { Default::default() },
+            file_index: None,
             session_dirty: false,
             session_saved_at: 0.0,
             cfg_dirty: false,
@@ -340,12 +383,42 @@ impl App {
             animating: self.animating || fading,
             wake,
             bg: self.bg_frame(),
-            bg_animating: bg_on || fading,
-            bg_fps: self.cfg.bg_fps,
+            bg_animating: bg_on || fading || self.pulses_live(),
+            bg_fps: if self.pulses_live() { self.cfg.bg_fps.max(60) } else { self.cfg.bg_fps },
         }
     }
 
+    /// Send a ripple into the background from the caret.
+    fn pulse(&mut self, strength: f32) {
+        if self.cfg.reactivity <= 0.0 || !self.cfg.animations {
+            return;
+        }
+        let lh = self.cx.line_h;
+        let Some((x, y)) = self.cur().and_then(|(v, _)| v.caret_screen(lh)) else { return };
+        let now = self.now;
+        // fast typing feeds the ring already on its way instead of stacking new ones
+        let last = &mut self.pulses[self.pulse_i];
+        if now - last.2 < 0.09 {
+            last.3 = (last.3 + strength * 0.25).min(1.8);
+            return;
+        }
+        self.pulse_i = (self.pulse_i + 1) % self.pulses.len();
+        self.pulses[self.pulse_i] = (x, y, now, strength);
+    }
+
+    fn pulses_live(&self) -> bool {
+        self.pulses.iter().any(|p| p.3 > 0.0 && self.now - p.2 < PULSE_SECS)
+    }
+
     fn bg_frame(&self) -> BgFrame {
+        let (w, h) = self.cx.size;
+        let mut pulses = [[0.0f32; 4]; 4];
+        for (out, p) in pulses.iter_mut().zip(&self.pulses) {
+            let age = (self.now - p.2) as f32;
+            if p.3 > 0.0 && (age as f64) < PULSE_SECS {
+                *out = [p.0 / w.max(1.0), p.1 / h.max(1.0), age.max(0.0), p.3 * self.cfg.reactivity];
+            }
+        }
         let th = self.theme();
         let spec = self.cfg.bg_for(th);
         let cur = SceneRaw::new(&spec, th.ui.bg, self.bg_phase);
@@ -359,6 +432,7 @@ impl App {
                 render: false,
                 vignette: self.cfg.vignette,
                 time: self.now as f32,
+                pulses,
             },
             None => BgFrame {
                 a: cur,
@@ -368,6 +442,7 @@ impl App {
                 render: false,
                 vignette: self.cfg.vignette,
                 time: self.now as f32,
+                pulses,
             },
         }
     }
@@ -741,6 +816,7 @@ impl App {
                 if let Some((pid, i)) = actor {
                     if let Some(t) = self.panes.get_mut(&pid).and_then(|p| p.tabs.get_mut(i)) {
                         t.view.sel = new_sel;
+                        t.view.extra.clear();
                     }
                 }
                 self.sync_doc(id, actor);
@@ -798,7 +874,11 @@ impl App {
                 if actor != Some((*pid, ti)) {
                     for n in &notes {
                         tab.view.sel = n.map_sel(tab.view.sel);
+                        for c in tab.view.extra.iter_mut() {
+                            c.sel = n.map_sel(c.sel);
+                        }
                     }
+                    tab.view.merge();
                 }
                 tab.view.clamp(len);
             }
@@ -808,10 +888,12 @@ impl App {
     }
 
     /// Run an editing operation on the focused view and sync everything.
+    /// This is for single-cursor operations: any extra cursors are dropped.
     fn edit(&mut self, f: impl FnOnce(&mut View, &mut Document)) {
         let now = self.now;
         let actor = self.actor();
         let Some((v, d)) = self.cur() else { return };
+        v.extra.clear();
         f(v, d);
         v.goal = None;
         v.touch(now);
@@ -820,11 +902,87 @@ impl App {
         self.dirty = true;
     }
 
-    /// Run a caret movement on the focused view.
+    /// Run an editing operation at every cursor, as one undo step. `f` gets
+    /// the cursor's index in document order.
+    fn edit_each(&mut self, kind: EditKind, mut f: impl FnMut(usize, &mut Sel, &mut Document)) {
+        let now = self.now;
+        let actor = self.actor();
+        let Some((v, d)) = self.cur() else { return };
+        if v.extra.is_empty() {
+            f(0, &mut v.sel, d);
+        } else {
+            let mut cs: Vec<(Sel, bool)> = v.extra.iter().map(|c| (c.sel, false)).collect();
+            cs.push((v.sel, true));
+            cs.sort_by_key(|c| (c.0.start(), c.0.end()));
+            d.buf.group_begin(v.sel, v.extra.iter().map(|c| c.sel).collect());
+            // last in the document first, so an edit never moves the cursors
+            // still waiting their turn; the ones already done are remapped
+            for i in (0..cs.len()).rev() {
+                let n0 = d.buf.notes.len();
+                let mut sel = cs[i].0;
+                f(i, &mut sel, d);
+                cs[i].0 = sel;
+                for note in &d.buf.notes[n0..] {
+                    for (j, c) in cs.iter_mut().enumerate() {
+                        if j != i {
+                            c.0 = note.map_sel(c.0);
+                        }
+                    }
+                }
+            }
+            v.extra.clear();
+            for (sel, primary) in cs {
+                if primary {
+                    v.sel = sel;
+                } else {
+                    v.extra.push(Cur { sel, goal: None });
+                }
+            }
+            v.merge();
+            d.buf.group_end(v.sel, v.extra.iter().map(|c| c.sel).collect(), kind);
+        }
+        v.goal = None;
+        v.touch(now);
+        let id = d.id;
+        self.sync_doc(id, actor);
+        self.dirty = true;
+    }
+
+    /// Like `edit_each` for operations that work on whole lines: a line
+    /// holding several cursors is only handled once.
+    fn edit_lines(&mut self, mut f: impl FnMut(&mut Sel, &mut Document)) {
+        let mut done_from = usize::MAX;
+        self.edit_each(EditKind::Other, |_, sel, d| {
+            let (l0, l1) = d.buf.selected_lines(*sel);
+            if l1 >= done_from {
+                return;
+            }
+            done_from = l0;
+            f(sel, d);
+        });
+    }
+
+    /// Run a caret movement on the focused view. Moving the primary cursor
+    /// this way drops the others; use `nav_each` to move them all.
     fn nav(&mut self, f: impl FnOnce(&mut View, &Document)) {
         let now = self.now;
         if let Some((v, d)) = self.cur() {
+            let before = v.sel;
             f(v, d);
+            if v.sel != before {
+                v.extra.clear();
+            }
+            v.touch(now);
+        }
+        self.dirty = true;
+    }
+
+    /// Run a caret movement on every cursor of the focused view.
+    fn nav_each(&mut self, f: impl Fn(&mut View, &Document)) {
+        let now = self.now;
+        if let Some((v, d)) = self.cur() {
+            let d = &*d;
+            v.each(|v| f(v, d));
             v.touch(now);
         }
         self.dirty = true;
@@ -930,6 +1088,8 @@ impl App {
             Document::from_text(id, "", Some(path.clone()), tw)
         };
         self.docs.insert(id, doc);
+        self.files.visit(&path);
+        self.save_files();
         self.add_recent(path);
         self.add_tab_for(id, true);
         self.kb = Kb::Editor;
@@ -1223,7 +1383,55 @@ impl App {
         self.dirty = true;
     }
 
+    fn open_file_finder(&mut self) {
+        let index = match &self.file_index {
+            Some(ix) => {
+                ix.refresh();
+                ix.clone()
+            }
+            None => {
+                let root = std::env::var_os("GLINT_INDEX_ROOT").map(PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("/"));
+                let ix = crate::files::Index::start(root);
+                self.file_index = Some(ix.clone());
+                ix
+            }
+        };
+        // open tabs, the focused pane's first
+        let mut order = self.pane_order();
+        if let Some(pos) = order.iter().position(|p| *p == self.focus) {
+            order.swap(0, pos);
+        }
+        let mut tabs = Vec::new();
+        for pid in order {
+            for (i, t) in self.panes[&pid].tabs.iter().enumerate() {
+                if let Some(d) = self.docs.get(&t.view.doc) {
+                    tabs.push((d.title(), d.path.clone(), pid, i));
+                }
+            }
+        }
+        // the tab being looked at goes last: the point is to go somewhere else
+        if let Some((pid, idx)) = self.actor() {
+            if let Some(pos) = tabs.iter().position(|t| t.2 == pid && t.3 == idx) {
+                let t = tabs.remove(pos);
+                tabs.push(t);
+            }
+        }
+        let current = self.cur_doc_id().and_then(|id| self.docs.get(&id)).and_then(|d| d.path.clone());
+        let finder = crate::files::Finder::new(index, &self.files, tabs, &self.recent, current.as_deref());
+        self.open_overlay(Ov::Palette(Palette::files(finder, "Go to file:  name   ·   folder/ name   ·   ~/path  ../")));
+    }
+
+    fn save_files(&mut self) {
+        if self.persist && self.files.dirty {
+            self.files.save(&files_path());
+        }
+    }
+
     fn open_palette(&mut self, mode: PalMode) {
+        if mode == PalMode::Files {
+            self.open_file_finder();
+            return;
+        }
         let (items, selected, hint): (Vec<PalItem>, usize, &str) = match mode {
             PalMode::Commands => (
                 Cmd::ALL
@@ -1234,29 +1442,7 @@ impl App {
                 0,
                 "Type a command",
             ),
-            PalMode::Files => {
-                let mut items = Vec::new();
-                let mut open: Vec<PathBuf> = Vec::new();
-                for pid in self.pane_order() {
-                    let p = &self.panes[&pid];
-                    for (i, t) in p.tabs.iter().enumerate() {
-                        if let Some(d) = self.docs.get(&t.view.doc) {
-                            if let Some(path) = &d.path {
-                                open.push(path.clone());
-                            }
-                            items.push(PalItem { label: d.title(), detail: d.display_path(), act: PalAct::Tab { pane: pid, idx: i } });
-                        }
-                    }
-                }
-                for r in &self.recent {
-                    if open.contains(r) {
-                        continue;
-                    }
-                    let name = r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    items.push(PalItem { label: name, detail: format!("recent · {}", r.display()), act: PalAct::Path(r.clone()) });
-                }
-                (items, 0, "Go to a tab or recent file")
-            }
+            PalMode::Files => (Vec::new(), 0, ""),
             PalMode::Themes => (
                 self.themes
                     .iter()
@@ -1293,6 +1479,7 @@ impl App {
                 self.kb = Kb::Editor;
             }
             PalAct::Path(p) => self.open_path(p),
+            PalAct::Browse(_) => {}
             PalAct::Theme(i) => {
                 self.set_theme(i, true);
             }
@@ -1313,6 +1500,23 @@ impl App {
             OverlayEvent::None => {}
             OverlayEvent::Close => self.close_overlay(true),
             OverlayEvent::Act(act) => {
+                // the file finder remembers what was picked for this query
+                if let Some(Overlay { ov: Ov::Palette(p), .. }) = &self.overlay {
+                    if p.mode == PalMode::Files {
+                        let path = match &act {
+                            PalAct::Path(path) => Some(path.clone()),
+                            PalAct::Tab { pane, idx } => {
+                                self.panes.get(pane).and_then(|pn| pn.tabs.get(*idx)).and_then(|t| self.docs.get(&t.view.doc)).and_then(|d| d.path.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(path) = path {
+                            let q = p.query().to_string();
+                            self.files.learn(&q, &path);
+                        }
+                    }
+                }
+                self.save_files();
                 self.close_overlay(false);
                 self.run_act(act);
             }
@@ -1681,10 +1885,24 @@ impl App {
                 let s = if cmd == Cmd::Undo { d.buf.undo() } else { d.buf.redo() };
                 if let Some(s) = s {
                     v.sel = s;
+                    v.extra = d.buf.take_restored().into_iter().map(|sel| Cur { sel, goal: None }).collect();
+                    v.merge();
                 }
             }),
             Cmd::Cut | Cmd::Copy => {
                 let Some((v, d)) = self.cur() else { return };
+                if !v.extra.is_empty() {
+                    // several cursors: their selections, one per line
+                    let parts: Vec<String> = v.all_sels().iter().filter(|s| !s.is_empty()).map(|s| d.buf.slice(s.start(), s.end())).collect();
+                    if parts.is_empty() {
+                        return;
+                    }
+                    self.clip.set(&parts.join("\n"));
+                    if cmd == Cmd::Cut {
+                        self.edit_each(EditKind::Other, |_, sel, d| d.buf.insert(sel, "", EditKind::Other));
+                    }
+                    return;
+                }
                 // with no selection, act on the whole line
                 let (a, b) = if v.sel.is_empty() {
                     let l = d.buf.line_of(v.sel.head);
@@ -1710,7 +1928,12 @@ impl App {
             Cmd::Paste => {
                 let text = self.clip.get();
                 if !text.is_empty() {
-                    self.edit(|v, d| d.buf.insert(&mut v.sel, &text, EditKind::Other));
+                    // as many lines as cursors: one line goes to each
+                    let n = self.cur().map(|(v, _)| v.extra.len() + 1).unwrap_or(1);
+                    let lines: Vec<&str> = text.strip_suffix('\n').unwrap_or(&text).split('\n').collect();
+                    let spread = n > 1 && lines.len() == n;
+                    self.edit_each(EditKind::Other, |i, sel, d| d.buf.insert(sel, if spread { lines[i] } else { &text }, EditKind::Other));
+                    self.pulse(1.5);
                 }
             }
             Cmd::SelectAll => self.nav(|v, d| {
@@ -1721,20 +1944,93 @@ impl App {
             Cmd::MoveLineUp => self.edit(|v, d| d.buf.move_lines(&mut v.sel, true)),
             Cmd::MoveLineDown => self.edit(|v, d| d.buf.move_lines(&mut v.sel, false)),
             Cmd::DeleteLine => self.edit(|v, d| d.buf.delete_lines(&mut v.sel)),
-            Cmd::ToggleComment => self.edit(|v, d| {
+            Cmd::ToggleComment => self.edit_lines(|sel, d| {
                 let (p, s) = comment_tokens(d.hl.lang());
                 if !p.is_empty() {
-                    d.buf.toggle_comment(&mut v.sel, p, s);
+                    d.buf.toggle_comment(sel, p, s);
                 }
             }),
-            Cmd::Indent => self.edit(|v, d| {
+            Cmd::Indent => self.edit_lines(|sel, d| {
                 let unit = d.indent_unit();
-                d.buf.indent(&mut v.sel, &unit)
+                d.buf.indent(sel, &unit)
             }),
-            Cmd::Outdent => self.edit(|v, d| {
+            Cmd::Outdent => self.edit_lines(|sel, d| {
                 let w = d.indent_width;
-                d.buf.outdent(&mut v.sel, w)
+                d.buf.outdent(sel, w)
             }),
+            Cmd::SelectNext => {
+                let now = self.now;
+                let Some((v, d)) = self.cur() else { return };
+                let mut none = false;
+                if v.sel.is_empty() {
+                    let (a, b) = d.buf.word_at(v.sel.head);
+                    if a < b {
+                        v.sel = Sel::new(a, b);
+                    }
+                } else {
+                    let needle = d.buf.slice(v.sel.start(), v.sel.end());
+                    let taken = v.all_sels();
+                    let hit = occurrences(&d.buf, &needle, v.sel.end(), usize::MAX).into_iter().find(|h| !taken.iter().any(|s| s.start() == h.0 && s.end() == h.1));
+                    match hit {
+                        Some((a, b)) => v.add_cursor(Sel::new(a, b)),
+                        None => none = true,
+                    }
+                }
+                v.goal = None;
+                v.touch(now);
+                if none {
+                    self.toast(0, "No other occurrences");
+                }
+            }
+            Cmd::SelectAllOccurrences => {
+                let now = self.now;
+                let Some((v, d)) = self.cur() else { return };
+                if v.sel.is_empty() {
+                    let (a, b) = d.buf.word_at(v.sel.head);
+                    v.sel = Sel::new(a, b);
+                }
+                if v.sel.is_empty() {
+                    return;
+                }
+                let needle = d.buf.slice(v.sel.start(), v.sel.end());
+                let here = (v.sel.start(), v.sel.end());
+                let all = occurrences(&d.buf, &needle, 0, MAX_CURSORS + 1);
+                let capped = all.len() > MAX_CURSORS;
+                v.extra = all.into_iter().take(MAX_CURSORS).filter(|h| *h != here).map(|(a, b)| Cur { sel: Sel::new(a, b), goal: None }).collect();
+                v.merge();
+                v.goal = None;
+                v.touch(now);
+                let n = v.extra.len() + 1;
+                self.toast(0, if capped { format!("Selected the first {n} occurrences") } else { format!("{n} occurrence{} selected", if n == 1 { "" } else { "s" }) });
+            }
+            Cmd::CursorAbove | Cmd::CursorBelow => {
+                let now = self.now;
+                let up = cmd == Cmd::CursorAbove;
+                let Some((v, d)) = self.cur() else { return };
+                if v.extra.len() >= MAX_CURSORS {
+                    return;
+                }
+                // send a copy of the outermost cursor one row further
+                let sels = v.all_sels();
+                let edge = if up { sels[0] } else { sels[sels.len() - 1] };
+                let goal = if edge == v.sel { v.goal } else { v.extra.iter().find(|c| c.sel == edge).and_then(|c| c.goal) };
+                let (old_sel, old_goal) = (v.sel, v.goal);
+                v.sel = Sel::caret(edge.head);
+                v.goal = goal;
+                v.move_v(&d.buf, if up { -1 } else { 1 }, false, tw);
+                let (new_sel, new_goal) = (v.sel, v.goal);
+                v.sel = old_sel;
+                v.goal = old_goal;
+                // on the first / last row the move runs to the very start / end instead
+                let stuck = d.buf.line_of(new_sel.head) == d.buf.line_of(edge.head) && (new_sel.head == 0 || new_sel.head == d.buf.len());
+                if new_sel.head != edge.head && !stuck {
+                    v.extra.push(Cur { sel: old_sel, goal: old_goal });
+                    v.sel = new_sel;
+                    v.goal = new_goal;
+                    v.merge();
+                }
+                v.touch(now);
+            }
             Cmd::Find => self.open_find(false),
             Cmd::Replace => self.open_find(true),
             Cmd::FindNext => self.find_step(true),
@@ -1906,7 +2202,10 @@ impl App {
                     self.find_changed();
                 }
             }
-            Kb::Editor => self.edit(|v, d| d.buf.insert(&mut v.sel, s, EditKind::Type)),
+            Kb::Editor => {
+                self.edit_each(EditKind::Type, |_, sel, d| d.buf.insert(sel, s, EditKind::Type));
+                self.pulse(1.0);
+            }
         }
     }
 
@@ -1956,6 +2255,10 @@ impl App {
                     | Cmd::ToggleComment
                     | Cmd::Indent
                     | Cmd::Outdent
+                    | Cmd::SelectNext
+                    | Cmd::SelectAllOccurrences
+                    | Cmd::CursorAbove
+                    | Cmd::CursorBelow
             );
             if !(edits && matches!(self.kb, Kb::Find(_))) {
                 self.run(cmd);
@@ -1981,8 +2284,9 @@ impl App {
         let now = self.now;
         let lh = self.cx.line_h;
         let ext = mods.shift;
+        let pairs = self.cfg.auto_pairs;
         match key {
-            Key::Left | Key::Right => self.nav(|v, d| v.move_h(&d.buf, key == Key::Right, mods.ctrl, ext)),
+            Key::Left | Key::Right => self.nav_each(|v, d| v.move_h(&d.buf, key == Key::Right, mods.ctrl, ext)),
             Key::Up | Key::Down => {
                 let dir: isize = if key == Key::Up { -1 } else { 1 };
                 if mods.ctrl && !ext {
@@ -1991,71 +2295,95 @@ impl App {
                     }
                     self.dirty = true;
                 } else {
-                    self.nav(|v, d| v.move_v(&d.buf, dir, ext, tw));
+                    self.nav_each(|v, d| v.move_v(&d.buf, dir, ext, tw));
                 }
             }
-            Key::PageUp | Key::PageDown => self.nav(|v, d| {
+            Key::PageUp | Key::PageDown => self.nav_each(|v, d| {
                 let rows = v.page_rows as isize;
                 v.move_v(&d.buf, if key == Key::PageUp { -rows } else { rows }, ext, tw);
             }),
-            Key::Home => self.nav(|v, d| {
+            Key::Home => self.nav_each(|v, d| {
                 if mods.ctrl {
                     v.set_head(0, ext);
                 } else {
                     v.home(&d.buf, ext, tw);
                 }
             }),
-            Key::End => self.nav(|v, d| {
+            Key::End => self.nav_each(|v, d| {
                 if mods.ctrl {
                     v.set_head(d.buf.len(), ext);
                 } else {
                     v.end(&d.buf, ext, tw);
                 }
             }),
-            Key::Enter => self.edit(|v, d| {
-                let unit = d.indent_unit();
-                d.buf.newline(&mut v.sel, &unit)
-            }),
-            Key::Tab => self.edit(|v, d| {
-                if mods.shift {
-                    let w = d.indent_width;
-                    d.buf.outdent(&mut v.sel, w);
-                } else {
+            Key::Enter => {
+                self.edit_each(EditKind::Other, |_, sel, d| {
                     let unit = d.indent_unit();
-                    let w = d.indent_width;
-                    d.buf.tab(&mut v.sel, &unit, w);
-                }
-            }),
-            Key::Backspace => self.edit(|v, d| {
+                    d.buf.newline(sel, &unit)
+                });
+                self.pulse(1.3);
+            }
+            Key::Tab if mods.shift => self.edit_lines(|sel, d| {
                 let w = d.indent_width;
-                d.buf.backspace(&mut v.sel, mods.ctrl, w)
+                d.buf.outdent(sel, w);
             }),
-            Key::Delete => self.edit(|v, d| d.buf.delete(&mut v.sel, mods.ctrl)),
+            Key::Tab => self.edit_each(EditKind::Other, |_, sel, d| {
+                let unit = d.indent_unit();
+                let w = d.indent_width;
+                d.buf.tab(sel, &unit, w);
+            }),
+            Key::Backspace => {
+                self.edit_each(EditKind::Other, |_, sel, d| {
+                    if pairs && !mods.ctrl && crate::pairs::backspace_pair(&mut d.buf, sel) {
+                        return;
+                    }
+                    let w = d.indent_width;
+                    d.buf.backspace(sel, mods.ctrl, w)
+                });
+                self.pulse(0.6);
+            }
+            Key::Delete => {
+                self.edit_each(EditKind::Other, |_, sel, d| d.buf.delete(sel, mods.ctrl));
+                self.pulse(0.6);
+            }
             Key::Escape => {
                 if self.find.open {
                     self.close_find();
-                } else {
-                    self.nav(|v, _| {
+                } else if let Some((v, _)) = self.cur() {
+                    // first back to one cursor, then drop the selection
+                    if !v.extra.is_empty() {
+                        v.extra.clear();
+                    } else {
                         let h = v.sel.head;
                         v.set_head(h, false);
-                    });
+                    }
+                    v.touch(now);
                 }
             }
             _ => {
                 if let Some(t) = text {
                     if !mods.ctrl && !mods.alt && !t.is_empty() && !t.chars().any(|c| c.is_control()) {
-                        self.edit(|v, d| {
+                        self.edit_each(EditKind::Type, |_, sel, d| {
                             // a closing bracket typed on a blank line steps back one indent level
-                            if matches!(t, "}" | ")" | "]") && v.sel.is_empty() {
-                                let ls = d.buf.line_start(d.buf.line_of(v.sel.head));
-                                let before = d.buf.slice(ls, v.sel.head);
+                            if matches!(t, "}" | ")" | "]") && sel.is_empty() {
+                                let ls = d.buf.line_start(d.buf.line_of(sel.head));
+                                let before = d.buf.slice(ls, sel.head);
                                 if !before.is_empty() && before.chars().all(|c| c == ' ' || c == '\t') {
                                     let w = d.indent_width;
-                                    d.buf.outdent(&mut v.sel, w);
+                                    d.buf.outdent(sel, w);
                                 }
                             }
-                            d.buf.insert(&mut v.sel, t, EditKind::Type)
+                            let mut it = t.chars();
+                            if let (true, Some(c), None) = (pairs, it.next(), it.next()) {
+                                // `'` is an apostrophe in prose and a lifetime in Rust
+                                let apostrophes = !matches!(d.hl.lang(), "Markdown" | "Plain Text" | "Rust");
+                                if crate::pairs::type_char(&mut d.buf, sel, c, apostrophes) {
+                                    return;
+                                }
+                            }
+                            d.buf.insert(sel, t, EditKind::Type)
                         });
+                        self.pulse(1.0);
                     }
                 }
             }
@@ -2125,6 +2453,35 @@ impl App {
                                     } else {
                                         v.sel = Sel::new(origin.0, (d.buf.line_end(l) + 1).min(d.buf.len()).max(origin.1));
                                     }
+                                }
+                            }
+                            v.goal = None;
+                            v.touch(now);
+                        }
+                    }
+                }
+                self.dirty = true;
+            }
+            Some(Drag::Column { pane, line, col }) => {
+                let (pane, line0, col0) = (*pane, *line, *col);
+                cursor = CursorKind::Text;
+                let now = self.now;
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    if let Some(tab) = p.tabs.get_mut(p.active) {
+                        if let Some(d) = self.docs.get(&tab.view.doc) {
+                            let pos = editor::pos_at(&mut self.cx, &tab.view, d, x, y, tw, md_on && d.is_markdown());
+                            let v = &mut tab.view;
+                            let (line1, col1) = editor::line_col_at(&self.cx, v, d, pos, x);
+                            let (la, lb) = (line0.min(line1), line0.max(line1).min(line0.min(line1) + MAX_CURSORS - 1));
+                            v.extra.clear();
+                            for l in la..=lb {
+                                let text = d.buf.line_text(l);
+                                let a = d.buf.line_byte_to_pos(l, crate::wrap::byte_at_cell(&text, col0, tw));
+                                let b = d.buf.line_byte_to_pos(l, crate::wrap::byte_at_cell(&text, col1, tw));
+                                if l == line1 {
+                                    v.sel = Sel::new(a, b);
+                                } else {
+                                    v.extra.push(Cur { sel: Sel::new(a, b), goal: None });
                                 }
                             }
                             v.goal = None;
@@ -2285,6 +2642,37 @@ impl App {
                 let Some(d) = self.docs.get(&tab.view.doc) else { return };
                 let pos = editor::pos_at(&mut self.cx, &tab.view, d, x, y, tw, md_on && d.is_markdown());
                 let v = &mut tab.view;
+                if mods.alt && !mods.ctrl {
+                    // Alt+drag: a column of cursors
+                    let (line, col) = editor::line_col_at(&self.cx, v, d, pos, x);
+                    v.extra.clear();
+                    v.set_head(pos, false);
+                    v.blink_at = now;
+                    self.drag = Some(Drag::Column { pane: p, line, col });
+                    return;
+                }
+                if mods.ctrl && !mods.shift {
+                    // Ctrl+click adds a cursor, or takes away the one already there
+                    if clicks == 1 {
+                        let on = |s: Sel| s.start() <= pos && pos <= s.end();
+                        if let Some(i) = v.extra.iter().position(|c| on(c.sel)) {
+                            v.extra.remove(i);
+                            return;
+                        }
+                        if on(v.sel) && !v.extra.is_empty() {
+                            let c = v.extra.pop().unwrap();
+                            v.sel = c.sel;
+                            v.goal = c.goal;
+                            v.merge();
+                            return;
+                        }
+                        if v.extra.len() < MAX_CURSORS {
+                            v.extra.push(Cur { sel: v.sel, goal: v.goal });
+                        }
+                    }
+                } else {
+                    v.extra.clear();
+                }
                 let origin = match clicks {
                     2 => {
                         let (a, b) = d.buf.word_at(pos);
@@ -2366,6 +2754,12 @@ impl App {
             Some(Drag::Slider) => {
                 if let Some(Overlay { ov: Ov::Settings(s), .. }) = &mut self.overlay {
                     s.release();
+                }
+            }
+            Some(Drag::Select { pane, .. }) | Some(Drag::Column { pane, .. }) => {
+                // cursors the drag ran into become part of it
+                if let Some(v) = self.panes.get_mut(&pane).and_then(|p| p.active_view()) {
+                    v.merge();
                 }
             }
             _ => {}

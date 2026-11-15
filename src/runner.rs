@@ -825,10 +825,10 @@ impl Snap {
                 self.click(v[0], v[1], button, mods, times);
             }
             "drag" => {
-                let v = nums(arg, 4)?;
+                let (v, mods) = nums_mods(arg, 4)?;
                 self.send(Input::MouseMove(v[0], v[1]));
                 self.step(1);
-                self.send(Input::MouseDown { button: 0, mods: Mods::default() });
+                self.send(Input::MouseDown { button: 0, mods });
                 self.step(1);
                 let n = 8;
                 for i in 1..=n {

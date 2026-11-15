@@ -31,6 +31,8 @@ pub enum PalAct {
     /// 0 = follow the theme, n = the n-th syntax palette.
     Syntax(usize),
     Lang(String),
+    /// File finder: browse into this folder.
+    Browse(std::path::PathBuf),
 }
 
 pub struct PalItem {
@@ -229,9 +231,34 @@ pub struct Palette {
     /// Rows that fit, from the last draw.
     vis: usize,
     reveal: bool,
+    /// File finder (Files mode): produces the items for each query.
+    finder: Option<crate::files::Finder>,
+    /// File finder: the path behind each item.
+    paths: Vec<std::path::PathBuf>,
 }
 
 impl Palette {
+    /// The file finder: items come from `finder` as the query changes.
+    pub fn files(finder: crate::files::Finder, placeholder: &str) -> Palette {
+        let mut p = Palette::new(PalMode::Files, Vec::new(), 0, placeholder);
+        p.finder = Some(finder);
+        p.refilter();
+        p
+    }
+
+    pub fn query(&self) -> &str {
+        &self.field.text
+    }
+
+    /// Point the file finder at a folder.
+    fn browse(&mut self, dir: &std::path::Path) {
+        if let Some(f) = &self.finder {
+            let t = f.browse_text(dir);
+            self.field.set(&t);
+            self.refilter();
+        }
+    }
+
     pub fn new(mode: PalMode, items: Vec<PalItem>, selected: usize, placeholder: &str) -> Palette {
         let shown: Vec<(usize, Vec<usize>)> = (0..items.len()).map(|i| (i, Vec::new())).collect();
         let sel = selected.min(shown.len().saturating_sub(1));
@@ -246,6 +273,8 @@ impl Palette {
             scroll: Smooth::new(first),
             vis: PAL_ROWS,
             reveal: true,
+            finder: None,
+            paths: Vec::new(),
         }
     }
 
@@ -259,7 +288,29 @@ impl Palette {
 
     fn refilter(&mut self) {
         let q = self.field.text.clone();
-        if q.trim().is_empty() {
+        if let Some(f) = self.finder.as_mut() {
+            let hits = f.query(&q);
+            let hl = crate::files::Finder::highlight(&q);
+            self.paths = hits.iter().map(|h| h.path.clone()).collect();
+            self.items = hits
+                .into_iter()
+                .map(|h| PalItem {
+                    label: h.label,
+                    detail: h.detail,
+                    act: match h.kind {
+                        crate::files::HitKind::Tab { pane, idx } => PalAct::Tab { pane, idx },
+                        crate::files::HitKind::File => PalAct::Path(h.path),
+                        crate::files::HitKind::Dir => PalAct::Browse(h.path),
+                    },
+                })
+                .collect();
+            self.shown = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| (i, if hl.is_empty() { Vec::new() } else { fuzzy(&hl, &it.label).map(|m| m.1).unwrap_or_default() }))
+                .collect();
+        } else if q.trim().is_empty() {
             self.shown = (0..self.items.len()).map(|i| (i, Vec::new())).collect();
         } else {
             let mut scored: Vec<(i32, usize, Vec<usize>)> = self
@@ -271,7 +322,8 @@ impl Palette {
             scored.sort_by(|a, b| b.0.cmp(&a.0));
             self.shown = scored.into_iter().map(|(_, i, m)| (i, m)).collect();
         }
-        self.sel = 0;
+        // when browsing a folder, start on its first entry rather than on "../"
+        self.sel = if self.finder.is_some() && self.items.len() > 1 && self.items[0].label == "../" { 1 } else { 0 };
         self.scroll.target = 0.0;
         self.reveal = true;
     }
@@ -300,9 +352,43 @@ impl Palette {
                     return OverlayEvent::Goto(self.field.text.clone());
                 }
                 return match self.sel_act() {
+                    Some(PalAct::Browse(d)) => {
+                        self.browse(&d);
+                        OverlayEvent::None
+                    }
                     Some(a) => OverlayEvent::Act(a),
                     None => OverlayEvent::None,
                 };
+            }
+            // Tab: into the highlighted folder, or the folder of the highlighted file
+            Key::Tab if self.finder.is_some() => {
+                if let Some(i) = self.sel_item() {
+                    let dir = match &self.items[i].act {
+                        PalAct::Browse(d) => Some(d.clone()),
+                        _ => self.paths.get(i).and_then(|p| p.parent()).map(|p| p.to_path_buf()),
+                    };
+                    if let Some(d) = dir.filter(|d| !d.as_os_str().is_empty()) {
+                        self.browse(&d);
+                    }
+                }
+                return OverlayEvent::None;
+            }
+            // Backspace on an empty path segment goes up one folder
+            Key::Backspace
+                if self.finder.is_some()
+                    && !mods.ctrl
+                    && self.field.text.len() > 1
+                    && self.field.cursor == self.field.text.len()
+                    && self.field.anchor == self.field.cursor
+                    && self.field.text.ends_with('/')
+                    && crate::files::is_path_query(&self.field.text) =>
+            {
+                let t = self.field.text.trim_end_matches('/');
+                let cut = t.rfind('/').map(|i| i + 1).unwrap_or(0);
+                let up = t[..cut].to_string();
+                self.field.set(&up);
+                self.refilter();
+                return OverlayEvent::None;
             }
             Key::Up if n > 0 => return self.select(if self.sel == 0 { n - 1 } else { self.sel - 1 }),
             Key::Down if n > 0 => return self.select(if self.sel + 1 >= n { 0 } else { self.sel + 1 }),
@@ -351,7 +437,13 @@ impl Palette {
         match hit {
             Some(HitId::PalItem(i)) if i < self.shown.len() => {
                 self.sel = i;
-                OverlayEvent::Act(self.items[self.shown[i].0].act.clone())
+                match self.items[self.shown[i].0].act.clone() {
+                    PalAct::Browse(d) => {
+                        self.browse(&d);
+                        OverlayEvent::None
+                    }
+                    a => OverlayEvent::Act(a),
+                }
             }
             Some(HitId::Backdrop) => OverlayEvent::Close,
             _ => OverlayEvent::None,
@@ -361,6 +453,20 @@ impl Palette {
     pub fn draw(&mut self, cx: &mut Ctx, t: f32) {
         let (w, h) = cx.size;
         backdrop(cx, t);
+        // the file index fills in while the finder is open
+        let mut searching = false;
+        if let Some(f) = &self.finder {
+            searching = f.loading();
+            if searching {
+                cx.wake_at(cx.now + 0.2);
+            }
+            if f.stale() {
+                let (sel, scroll) = (self.sel, self.scroll.target);
+                self.refilter();
+                self.sel = sel.min(self.shown.len().saturating_sub(1));
+                self.scroll.target = scroll;
+            }
+        }
 
         let pw = cx.px(640.0).min(w - cx.px(48.0)).max(cx.px(160.0));
         let input_h = cx.px(48.0);
@@ -416,7 +522,7 @@ impl Palette {
         if n == 0 {
             cx.label_in(
                 L_MODAL,
-                "No results",
+                if searching { "Searching…" } else { "No results" },
                 cx.ui_font,
                 false,
                 Rect::new(list.x + cx.px(14.0), list.y, list.w, list.h),
@@ -518,6 +624,7 @@ enum SliderId {
     Speed,
     Scale,
     Knob(usize),
+    Reactivity,
     Dim,
     Vignette,
     Fps,
@@ -530,6 +637,9 @@ enum ToggleId {
     Animations,
     Blink,
     Wrap,
+    AutoPairs,
+    IndentGuides,
+    LineHighlight,
     BgAnimate,
     PauseUnfocused,
 }
@@ -580,6 +690,9 @@ fn rows_for(theme: &Theme) -> Vec<Row> {
         Row::Header("Editor"),
         Row::Toggle(ToggleId::Wrap),
         Row::Slider(SliderId::TabWidth),
+        Row::Toggle(ToggleId::AutoPairs),
+        Row::Toggle(ToggleId::IndentGuides),
+        Row::Toggle(ToggleId::LineHighlight),
         Row::Header("Background"),
         Row::Toggle(ToggleId::BgAnimate),
         Row::Slider(SliderId::Intensity),
@@ -592,6 +705,7 @@ fn rows_for(theme: &Theme) -> Vec<Row> {
         }
     }
     r.extend([
+        Row::Slider(SliderId::Reactivity),
         Row::Slider(SliderId::Dim),
         Row::Slider(SliderId::Vignette),
         Row::Slider(SliderId::Fps),
@@ -619,6 +733,7 @@ fn slider_spec(id: SliderId, theme: &Theme) -> SliderSpec {
         SliderId::Speed => s("Speed", 0.0, 3.0, 0.05, 0.01, 2),
         SliderId::Scale => s("Scale", 0.3, 3.0, 0.05, 0.01, 2),
         SliderId::Knob(i) => s(theme.bg.kind.knobs()[i.min(3)].0, 0.0, 1.0, 0.05, 0.01, 2),
+        SliderId::Reactivity => s("React to typing", 0.0, 1.0, 0.05, 0.01, 2),
         SliderId::Dim => s("Dim behind text", 0.0, 1.5, 0.05, 0.01, 2),
         SliderId::Vignette => s("Vignette", 0.0, 1.0, 0.05, 0.01, 2),
         SliderId::Fps => s("Frame rate", 15.0, 120.0, 5.0, 5.0, 0),
@@ -635,6 +750,7 @@ fn slider_get(id: SliderId, cfg: &Config, theme: &Theme) -> f32 {
         SliderId::Speed => cfg.bg_for(theme).speed,
         SliderId::Scale => cfg.bg_for(theme).scale,
         SliderId::Knob(i) => cfg.bg_for(theme).knobs[i.min(3)],
+        SliderId::Reactivity => cfg.reactivity,
         SliderId::Dim => cfg.dim,
         SliderId::Vignette => cfg.vignette,
         SliderId::Fps => cfg.bg_fps as f32,
@@ -665,6 +781,7 @@ fn slider_set(id: SliderId, cfg: &mut Config, theme: &Theme, v: f32) -> bool {
             let name = theme.bg.kind.knobs()[i.min(3)].0;
             cfg.bg.entry(theme.id.clone()).or_default().knobs.insert(knob_key(name), v);
         }
+        SliderId::Reactivity => cfg.reactivity = v,
         SliderId::Dim => cfg.dim = v,
         SliderId::Vignette => cfg.vignette = v,
         SliderId::Fps => cfg.bg_fps = v.round().max(1.0) as u32,
@@ -679,6 +796,9 @@ fn toggle_label(id: ToggleId) -> &'static str {
         ToggleId::Animations => "Animations",
         ToggleId::Blink => "Cursor blink",
         ToggleId::Wrap => "Word wrap",
+        ToggleId::AutoPairs => "Close brackets and quotes",
+        ToggleId::IndentGuides => "Indent guides",
+        ToggleId::LineHighlight => "Highlight current line",
         ToggleId::BgAnimate => "Animate",
         ToggleId::PauseUnfocused => "Pause when unfocused",
     }
@@ -690,6 +810,9 @@ fn toggle_ref(id: ToggleId, cfg: &mut Config) -> &mut bool {
         ToggleId::Animations => &mut cfg.animations,
         ToggleId::Blink => &mut cfg.cursor_blink,
         ToggleId::Wrap => &mut cfg.wrap,
+        ToggleId::AutoPairs => &mut cfg.auto_pairs,
+        ToggleId::IndentGuides => &mut cfg.indent_guides,
+        ToggleId::LineHighlight => &mut cfg.line_highlight,
         ToggleId::BgAnimate => &mut cfg.bg_animate,
         ToggleId::PauseUnfocused => &mut cfg.bg_pause_unfocused,
     }
@@ -701,6 +824,9 @@ fn toggle_get(id: ToggleId, cfg: &Config) -> bool {
         ToggleId::Animations => cfg.animations,
         ToggleId::Blink => cfg.cursor_blink,
         ToggleId::Wrap => cfg.wrap,
+        ToggleId::AutoPairs => cfg.auto_pairs,
+        ToggleId::IndentGuides => cfg.indent_guides,
+        ToggleId::LineHighlight => cfg.line_highlight,
         ToggleId::BgAnimate => cfg.bg_animate,
         ToggleId::PauseUnfocused => cfg.bg_pause_unfocused,
     }

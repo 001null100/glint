@@ -50,6 +50,7 @@ impl SceneRaw {
 #[derive(Clone, Copy, Pod, Zeroable, Default)]
 struct BgRaw {
     res: [f32; 4],
+    pulses: [[f32; 4]; 4],
     sa: SceneRaw,
     sb: SceneRaw,
 }
@@ -67,6 +68,8 @@ pub struct BgFrame {
     pub render: bool,
     pub vignette: f32,
     pub time: f32,
+    /// Typing pulses: x, y (0..1 of the window), age in seconds, strength.
+    pub pulses: [[f32; 4]; 4],
 }
 
 struct Target {
@@ -449,7 +452,7 @@ impl Renderer {
 
         // ---- uniforms
         if render_bg {
-            let raw = BgRaw { res: [self.bg_tex.w as f32, self.bg_tex.h as f32, bg.fade, 0.0], sa: bg.a, sb: bg.b };
+            let raw = BgRaw { res: [self.bg_tex.w as f32, self.bg_tex.h as f32, bg.fade, 0.0], pulses: bg.pulses, sa: bg.a, sb: bg.b };
             q.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&raw));
             let spread = (self.bg_scale / 0.5).max(1.0);
             let (bw, bh) = (self.blur_a.w as f32, self.blur_a.h as f32);

@@ -21,9 +21,28 @@ pub enum Reveal {
 /// Rows longer than this are only shaped up to this many bytes.
 const MAX_ROW_BYTES: usize = 4000;
 
+/// A secondary cursor.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Cur {
+    pub sel: Sel,
+    pub goal: Option<usize>,
+}
+
+fn sels_touch(a: Sel, b: Sel) -> bool {
+    if a.is_empty() || b.is_empty() { a.start() <= b.end() && b.start() <= a.end() } else { a.start() < b.end() && b.start() < a.end() }
+}
+
+fn sel_union(a: Sel, b: Sel) -> Sel {
+    let (s, e) = (a.start().min(b.start()), a.end().max(b.end()));
+    if a.head >= a.anchor { Sel::new(s, e) } else { Sel::new(e, s) }
+}
+
 pub struct View {
     pub doc: DocId,
+    /// The primary cursor: the one the view follows.
     pub sel: Sel,
+    /// Any further cursors, kept sorted and never overlapping.
+    pub extra: Vec<Cur>,
     /// Remembered column (in cells) for vertical movement.
     pub goal: Option<usize>,
     pub scroll_y: Smooth,
@@ -40,6 +59,8 @@ pub struct View {
     pub page_rows: usize,
     /// Rendered task checkboxes from the last draw: (rect, line, source byte).
     pub checks: Vec<(Rect, usize, usize)>,
+    /// Cached bracket match: (buffer rev, caret, pair).
+    bracket: (u64, usize, Option<(usize, usize)>),
 }
 
 /// Where a position sits in the wrapped layout of its line.
@@ -124,6 +145,7 @@ impl View {
         View {
             doc,
             sel: Sel::caret(0),
+            extra: Vec::new(),
             goal: None,
             scroll_y: Smooth::new(0.0),
             scroll_x: Smooth::new(0.0),
@@ -137,7 +159,80 @@ impl View {
             max_scroll: 0.0,
             page_rows: 20,
             checks: Vec::new(),
+            bracket: (u64::MAX, 0, None),
         }
+    }
+
+    /// Run a caret movement on every cursor, then merge any that met.
+    pub fn each(&mut self, mut f: impl FnMut(&mut View)) {
+        let mut extra = std::mem::take(&mut self.extra);
+        let (sel, goal) = (self.sel, self.goal);
+        for c in extra.iter_mut() {
+            self.sel = c.sel;
+            self.goal = c.goal;
+            f(self);
+            c.sel = self.sel;
+            c.goal = self.goal;
+        }
+        self.sel = sel;
+        self.goal = goal;
+        f(self);
+        self.extra = extra;
+        self.merge();
+    }
+
+    /// Sort the secondary cursors and fold together any that overlap each
+    /// other or the primary one.
+    pub fn merge(&mut self) {
+        if self.extra.is_empty() {
+            return;
+        }
+        self.extra.sort_by_key(|c| (c.sel.start(), c.sel.end()));
+        let mut kept: Vec<Cur> = Vec::with_capacity(self.extra.len());
+        for c in self.extra.drain(..) {
+            match kept.last_mut() {
+                Some(k) if sels_touch(k.sel, c.sel) => k.sel = sel_union(k.sel, c.sel),
+                _ => kept.push(c),
+            }
+        }
+        let mut p = self.sel;
+        loop {
+            let n = kept.len();
+            kept.retain(|c| {
+                if sels_touch(c.sel, p) {
+                    p = sel_union(p, c.sel);
+                    false
+                } else {
+                    true
+                }
+            });
+            if kept.len() == n {
+                break;
+            }
+        }
+        self.sel = p;
+        self.extra = kept;
+    }
+
+    /// Add a cursor, keeping the current primary as a secondary one.
+    pub fn add_cursor(&mut self, sel: Sel) {
+        self.extra.push(Cur { sel: self.sel, goal: self.goal });
+        self.sel = sel;
+        self.goal = None;
+        self.merge();
+    }
+
+    /// Every selection, in document order.
+    pub fn all_sels(&self) -> Vec<Sel> {
+        let mut v: Vec<Sel> = self.extra.iter().map(|c| c.sel).collect();
+        v.push(self.sel);
+        v.sort_by_key(|s| (s.start(), s.end()));
+        v
+    }
+
+    /// Line ranges that hold a cursor or selection, sorted.
+    fn active_lines(&self, buf: &Buffer) -> Vec<(usize, usize)> {
+        self.all_sels().iter().map(|s| (buf.line_of(s.start()), buf.line_of(s.end()))).collect()
     }
 
     /// A second view of the same document (for splits).
@@ -167,6 +262,10 @@ impl View {
     pub fn clamp(&mut self, len: usize) {
         self.sel.anchor = self.sel.anchor.min(len);
         self.sel.head = self.sel.head.min(len);
+        for c in self.extra.iter_mut() {
+            c.sel.anchor = c.sel.anchor.min(len);
+            c.sel.head = c.sel.head.min(len);
+        }
     }
 
     pub fn move_h(&mut self, buf: &Buffer, right: bool, word: bool, extend: bool) {
@@ -243,6 +342,12 @@ impl View {
         self.set_head(p, extend);
     }
 
+    /// Where the caret was drawn last frame, in window pixels.
+    pub fn caret_screen(&self, line_h: f32) -> Option<(f32, f32)> {
+        let (x, y) = self.caret.as_ref()?;
+        Some((self.text_rect.x + x.target - self.scroll_x.v, self.rect.y + y.target - self.scroll_y.v + line_h * 0.5))
+    }
+
     pub fn scroll_by(&mut self, dy: f32, now: f64) {
         self.scroll_y.target = (self.scroll_y.target + dy).clamp(0.0, self.max_scroll);
         self.scrolled_at = now;
@@ -265,13 +370,45 @@ pub struct EditorArgs<'a> {
     pub md: bool,
     /// Milliseconds of highlighting work allowed this frame.
     pub hl_budget_ms: u64,
+    pub line_highlight: bool,
+    pub indent_guides: bool,
 }
 
 const PAD_TOP: f32 = 8.0;
 
 /// Whether a line of a previewed Markdown document is shown rendered.
-fn md_rendered(kind: u8, line: usize, active: (usize, usize)) -> bool {
-    kind != md::FENCE && kind != md::CODE && !(line >= active.0 && line <= active.1)
+fn md_rendered(kind: u8, line: usize, active: &[(usize, usize)]) -> bool {
+    kind != md::FENCE && kind != md::CODE && !active.iter().any(|a| line >= a.0 && line <= a.1)
+}
+
+/// Width in cells of a line's leading whitespace, or None for a blank line.
+fn indent_cells(text: &str, tab_w: usize) -> Option<usize> {
+    let mut n = 0;
+    for c in text.chars() {
+        match c {
+            ' ' => n += 1,
+            '\t' => n += tab_w - n % tab_w.max(1),
+            '\n' | '\r' => return None,
+            _ => return Some(n),
+        }
+    }
+    None
+}
+
+/// Indent of the nearest non-blank line from `line` in direction `step`.
+fn near_indent(buf: &Buffer, line: usize, step: isize, tab_w: usize) -> usize {
+    let lines = buf.lines() as isize;
+    let mut l = line as isize;
+    for _ in 0..200 {
+        l += step;
+        if l < 0 || l >= lines {
+            break;
+        }
+        if let Some(n) = indent_cells(&buf.line_text(l as usize), tab_w) {
+            return n;
+        }
+    }
+    0
 }
 
 fn md_color(cx: &Ctx, cls: md::Cls) -> crate::util::Rgba {
@@ -415,7 +552,62 @@ pub fn draw(cx: &mut Ctx, v: &mut View, doc: &mut Document, a: &EditorArgs) {
     let (sa_line, sa_byte) = buf.pos_to_line_byte(sel_a);
     let (sb_line, sb_byte) = buf.pos_to_line_byte(sel_b);
     let (c_line, c_byte) = buf.pos_to_line_byte(v.sel.head);
-    let active = (sa_line, sb_line);
+    let active = if a.md { v.active_lines(buf) } else { Vec::new() };
+
+    // selections and carets of the other cursors that touch the visible lines
+    let mut sels: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut carets: Vec<(usize, usize)> = Vec::new();
+    if has_sel {
+        sels.push((sa_line, sa_byte, sb_line, sb_byte));
+    }
+    if !v.extra.is_empty() && first_line < lines {
+        let from = buf.line_start(first_line);
+        let to = buf.line_end(last_line.min(lines - 1));
+        let i0 = v.extra.partition_point(|c| c.sel.end() < from);
+        for c in v.extra.iter().skip(i0) {
+            if c.sel.start() > to {
+                break;
+            }
+            if !c.sel.is_empty() {
+                let (la, ba) = buf.pos_to_line_byte(c.sel.start());
+                let (lb, bb) = buf.pos_to_line_byte(c.sel.end());
+                sels.push((la, ba, lb, bb));
+            }
+            carets.push(buf.pos_to_line_byte(c.sel.head));
+        }
+    }
+
+    // the bracket pair at the caret
+    if v.bracket.0 != buf.rev || v.bracket.1 != v.sel.head {
+        let m = if has_sel || !v.extra.is_empty() { None } else { crate::pairs::match_at(buf, v.sel.head) };
+        v.bracket = (buf.rev, v.sel.head, m);
+    }
+    let brackets: Vec<(usize, usize)> = match v.bracket.2 {
+        Some((o, c)) if a.focused => vec![buf.pos_to_line_byte(o), buf.pos_to_line_byte(c)],
+        _ => Vec::new(),
+    };
+
+    let guides = a.indent_guides && !doc.is_prose();
+    let guide_w = doc.indent_width.max(1);
+    // indent of the last non-blank line above the one being drawn
+    let mut above = if guides && first_line < lines { near_indent(buf, first_line, -1, tab_w) } else { 0 };
+
+    let caret_alpha = if a.focused && a.blink {
+        let t = (cx.now - v.blink_at) as f32;
+        if t < 0.55 {
+            cx.wake_at(v.blink_at + 0.55);
+            1.0
+        } else if t < 25.0 {
+            cx.wake_at(cx.now + 1.0 / 30.0);
+            0.25 + 0.75 * (0.5 + 0.5 * ((t - 0.55) * 5.4).cos())
+        } else {
+            1.0
+        }
+    } else {
+        1.0
+    };
+    let caret_w = (2.0 * s).round().max(1.0);
+    let caret_clip = Rect::new(text_rect.x - caret_w, rect.y, text_rect.w + caret_w, rect.h);
 
     // matches that touch the visible lines, split per line
     let mut vis: Vec<(usize, usize, usize, bool)> = Vec::new();
@@ -485,7 +677,7 @@ pub fn draw(cx: &mut Ctx, v: &mut View, doc: &mut Document, a: &EditorArgs) {
             cx.quad(L_BASE, Quad::new(r, cx.ui.text.a(0.045)).clip(rect));
         }
 
-        if a.md && md_rendered(kind, line, active) {
+        if a.md && md_rendered(kind, line, &active) {
             // ---- rendered Markdown: markup hidden, laid out on its own
             let r = md::render(&text, kind);
             if r.rule {
@@ -566,6 +758,23 @@ pub fn draw(cx: &mut Ctx, v: &mut View, doc: &mut Document, a: &EditorArgs) {
             continue;
         }
 
+        // ---- indent guides
+        if guides {
+            let ind = match indent_cells(&text, tab_w) {
+                Some(n) => {
+                    above = n;
+                    n
+                }
+                None => above.min(near_indent(buf, line, 1, tab_w)),
+            };
+            let mut col = 0;
+            while col < ind {
+                let gx = (text_rect.x + col as f32 * cw - sx).round();
+                cx.quad(L_BASE, Quad::new(Rect::new(gx, y, s.max(1.0), block_h), cx.ui.text.a(0.075)).clip(text_rect));
+                col += guide_w;
+            }
+        }
+
         // ---- raw text
         for si in seg0..n_segs {
             if y >= rect.bottom() {
@@ -590,10 +799,13 @@ pub fn draw(cx: &mut Ctx, v: &mut View, doc: &mut Document, a: &EditorArgs) {
                 j += 1;
             }
 
-            // selection
-            if has_sel && line >= sa_line && line <= sb_line {
-                let from = if line == sa_line { sa_byte } else { 0 };
-                let to = if line == sb_line { sb_byte } else { usize::MAX };
+            // selections
+            for &(la, ba, lb, bb) in &sels {
+                if line < la || line > lb {
+                    continue;
+                }
+                let from = if line == la { ba } else { 0 };
+                let to = if line == lb { bb } else { usize::MAX };
                 let (xa, xb) = (from.max(seg.start), to.min(seg.end));
                 let continues = to > seg.end && last_seg;
                 if from <= seg.end && to >= seg.start && (xa < xb || (continues && xa <= seg.end)) {
@@ -603,10 +815,29 @@ pub fn draw(cx: &mut Ctx, v: &mut View, doc: &mut Document, a: &EditorArgs) {
                 }
             }
 
+            // matching brackets
+            for &(bl, bb) in &brackets {
+                if bl == line && bb >= seg.start && bb < seg.end {
+                    let x0 = cx.text.x_at(key, bb - seg.start);
+                    let r = Rect::new(ox + x0 - s, y_mid(y, row_h, lh * 0.86), cw + 2.0 * s, lh * 0.86);
+                    cx.quad(L_BASE, Quad::new(r, cx.ui.accent.a(0.16)).radius(3.0 * s).border(s.max(1.0), cx.ui.accent.a(0.7)).clip(text_rect));
+                }
+            }
+
             // caret
-            if line == c_line && c_byte >= segs[si].start && (last_seg || c_byte < segs[si + 1].start) {
+            let holds = |b: usize| b >= segs[si].start && (last_seg || b < segs[si + 1].start);
+            if line == c_line && holds(c_byte) {
                 let b = c_byte.min(seg.end) - seg.start;
                 caret_target = Some((seg.indent as f32 * cw + cx.text.x_at(key, b), row, row_h, scale));
+            }
+            for &(cl, cb) in &carets {
+                if cl == line && holds(cb) {
+                    let x = ox + cx.text.x_at(key, cb.min(seg.end) - seg.start);
+                    let ch = (lh * 0.82 * scale).round();
+                    let cr = Rect::new(x - caret_w * 0.5, y + (row_h - ch) * 0.5, caret_w, ch);
+                    let al = if a.focused { caret_alpha } else { 0.3 };
+                    cx.quad(L_BASE, Quad::new(cr, cx.ui.cursor.fade(al)).radius(caret_w * 0.5).clip(caret_clip));
+                }
             }
 
             cx.scene.text(L_BASE, key, ox, y, text_rect, cx.syn.text);
@@ -631,29 +862,16 @@ pub fn draw(cx: &mut Ctx, v: &mut View, doc: &mut Document, a: &EditorArgs) {
         v.caret = Some((ax, ay));
 
         let screen_y = rect.y + gy - sy;
-        if a.focused && !has_sel {
+        if a.focused && !has_sel && a.line_highlight && v.extra.is_empty() {
             cx.quad(L_BASE, Quad::new(Rect::new(rect.x, screen_y, rect.w, row_h), cx.ui.line).clip(rect));
         }
-        let alpha = if a.focused && a.blink {
-            let t = (cx.now - v.blink_at) as f32;
-            if t < 0.55 {
-                cx.wake_at(v.blink_at + 0.55);
-                1.0
-            } else if t < 25.0 {
-                cx.wake_at(cx.now + 1.0 / 30.0);
-                0.25 + 0.75 * (0.5 + 0.5 * ((t - 0.55) * 5.4).cos())
-            } else {
-                1.0
-            }
-        } else {
-            1.0
-        };
-        let w = (2.0 * s).round().max(1.0);
+        let alpha = caret_alpha;
+        let w = caret_w;
         let ch = (lh * 0.82 * scale).round();
         // the caret stretches from its gliding tail to where it is headed
         let (x0, x1) = if (gy - ty).abs() < 0.5 { (gx.min(tx), gx.max(tx)) } else { (gx, gx) };
         let cr = Rect::new(text_rect.x + x0 - sx - w * 0.5, screen_y + (row_h - ch) * 0.5, x1 - x0 + w, ch);
-        let clip = Rect::new(text_rect.x - w, rect.y, text_rect.w + w, rect.h);
+        let clip = caret_clip;
         if a.focused {
             cx.quad(L_BASE, Quad::new(cr.inset(-2.0 * s), cx.ui.accent.a(0.28 * alpha)).radius(4.0 * s).soft(5.0 * s).clip(clip));
             cx.quad(L_BASE, Quad::new(cr, cx.ui.cursor.fade(alpha)).radius(w * 0.5).clip(clip));
@@ -704,8 +922,7 @@ pub fn pos_at(cx: &mut Ctx, v: &View, doc: &Document, x: f32, y: f32, tab_w: usi
     wrap_line(&text, v.wrap.cols_for(line), tab_w, &mut segs);
     let si = (sub / units).min(segs.len() - 1);
     let kind = if md { doc.md_kinds.get(line).copied().unwrap_or(0) } else { 0 };
-    let active = (doc.buf.line_of(v.sel.start()), doc.buf.line_of(v.sel.end()));
-    if md && md_rendered(kind, line, active) {
+    if md && md_rendered(kind, line, &v.active_lines(&doc.buf)) {
         // map the click through the rendered text back to the source
         let r = md::render(&text, kind);
         if r.rule {
@@ -727,6 +944,13 @@ pub fn pos_at(cx: &mut Ctx, v: &View, doc: &Document, x: f32, y: f32, tab_w: usi
         b = prev_boundary(&text, segs[si].end).max(seg.start);
     }
     doc.buf.line_byte_to_pos(line, b)
+}
+
+/// Line and cell column for a column selection: the line of `pos` and the
+/// column under window x, which may lie past the end of the line.
+pub fn line_col_at(cx: &Ctx, v: &View, doc: &Document, pos: usize, x: f32) -> (usize, usize) {
+    let col = ((x - v.text_rect.x + v.scroll_x.v) / cx.cell).round().max(0.0) as usize;
+    (doc.buf.line_of(pos), col)
 }
 
 /// Scroll offset for a scrollbar thumb dragged to window y (thumb centre).

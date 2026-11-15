@@ -106,12 +106,16 @@ struct Txn {
     changes: Vec<Change>,
     before: Sel,
     after: Sel,
+    /// Secondary cursors before / after (multi-cursor edits only).
+    xb: Vec<Sel>,
+    xa: Vec<Sel>,
     kind: EditKind,
     at: Instant,
 }
 
 struct Open {
     before: Sel,
+    xb: Vec<Sel>,
     changes: Vec<Change>,
 }
 
@@ -132,6 +136,11 @@ pub struct Buffer {
     saved_id: u64,
     /// The next commit must start a new undo step.
     no_merge: bool,
+    /// Inside `group_begin` .. `group_end`: nested begin/commit calls fold
+    /// into the one open transaction.
+    grouped: bool,
+    /// Secondary cursors to restore after the last undo / redo.
+    restored: Vec<Sel>,
 }
 
 fn is_break(c: char) -> bool {
@@ -197,6 +206,8 @@ impl Buffer {
             base_id: 0,
             saved_id: 0,
             no_merge: false,
+            grouped: false,
+            restored: Vec::new(),
         }
     }
 
@@ -297,7 +308,7 @@ impl Buffer {
             return 0;
         }
         if self.open.is_none() {
-            self.open = Some(Open { before: Sel::caret(s), changes: Vec::new() });
+            self.open = Some(Open { before: Sel::caret(s), xb: Vec::new(), changes: Vec::new() });
         }
         let removed = self.apply_raw(s, e - s, &text);
         let n = text.chars().count();
@@ -317,8 +328,30 @@ impl Buffer {
 
     /// Start a transaction: everything until `commit` is one undo step.
     pub fn begin(&mut self, before: Sel) {
+        if self.grouped {
+            return;
+        }
         self.flush_open();
-        self.open = Some(Open { before, changes: Vec::new() });
+        self.open = Some(Open { before, xb: Vec::new(), changes: Vec::new() });
+    }
+
+    /// Start a multi-cursor step: every editing call until `group_end`
+    /// becomes part of one undo step. `extra` are the secondary cursors.
+    pub fn group_begin(&mut self, before: Sel, extra: Vec<Sel>) {
+        self.grouped = false;
+        self.flush_open();
+        self.open = Some(Open { before, xb: extra, changes: Vec::new() });
+        self.grouped = true;
+    }
+
+    pub fn group_end(&mut self, after: Sel, extra: Vec<Sel>, kind: EditKind) {
+        self.grouped = false;
+        self.commit_with(after, extra, kind);
+    }
+
+    /// Secondary cursors that the last undo / redo wants back.
+    pub fn take_restored(&mut self) -> Vec<Sel> {
+        std::mem::take(&mut self.restored)
     }
 
     /// Replace `[start, end)` with `text`. Applies immediately and records
@@ -329,6 +362,13 @@ impl Buffer {
 
     /// Finish the open transaction. A transaction without changes is dropped.
     pub fn commit(&mut self, after: Sel, kind: EditKind) {
+        if self.grouped {
+            return;
+        }
+        self.commit_with(after, Vec::new(), kind);
+    }
+
+    fn commit_with(&mut self, after: Sel, xa: Vec<Sel>, kind: EditKind) {
         let Some(open) = self.open.take() else { return };
         if open.changes.is_empty() {
             return;
@@ -337,6 +377,31 @@ impl Buffer {
         let no_merge = std::mem::replace(&mut self.no_merge, false);
         self.redo.clear();
         let saved_id = self.saved_id;
+
+        // typing with several cursors: letters join the previous step the
+        // same way single-cursor typing does
+        if !no_merge && kind == EditKind::Type && open.changes.len() > 1 {
+            if let Some(last) = self.undo.back_mut() {
+                let recent = now.saturating_duration_since(last.at) < MERGE_WINDOW;
+                let plain = |c: &Change| c.removed.is_empty() && !c.inserted.is_empty() && !c.inserted.contains('\n');
+                let word = |c: &Change| !c.inserted.chars().next().is_some_and(|ch| ch.is_whitespace());
+                if last.kind == EditKind::Type
+                    && last.id != saved_id
+                    && recent
+                    && last.xa.len() == xa.len()
+                    && last.xa.len() + 1 == open.changes.len()
+                    && last.changes.len() >= open.changes.len()
+                    && open.changes.iter().all(|c| plain(c) && word(c))
+                    && last.changes.iter().all(plain)
+                {
+                    last.changes.extend(open.changes);
+                    last.after = after;
+                    last.xa = xa;
+                    last.at = now;
+                    return;
+                }
+            }
+        }
 
         if !no_merge && open.changes.len() == 1 && kind != EditKind::Other {
             if let Some(last) = self.undo.back_mut() {
@@ -397,7 +462,7 @@ impl Buffer {
 
         let id = self.next_id;
         self.next_id += 1;
-        self.undo.push_back(Txn { id, changes: open.changes, before: open.before, after, kind, at: now });
+        self.undo.push_back(Txn { id, changes: open.changes, before: open.before, after, xb: open.xb, xa, kind, at: now });
         while self.undo.len() > UNDO_CAP {
             if let Some(t) = self.undo.pop_front() {
                 self.base_id = t.id;
@@ -414,6 +479,7 @@ impl Buffer {
         }
         self.no_merge = true;
         let sel = self.clamp_sel(t.before);
+        self.restored = t.xb.iter().map(|s| self.clamp_sel(*s)).collect();
         self.redo.push(t);
         Some(sel)
     }
@@ -427,6 +493,7 @@ impl Buffer {
         }
         self.no_merge = true;
         let sel = self.clamp_sel(t.after);
+        self.restored = t.xa.iter().map(|s| self.clamp_sel(*s)).collect();
         self.undo.push_back(t);
         Some(sel)
     }
@@ -1928,6 +1995,36 @@ mod tests {
         b.replace(0, 1, "a");
         b.undo();
         assert_eq!(b.text(), "A B!");
+    }
+
+    #[test]
+    fn grouped_edits_are_one_undo_step_and_remember_cursors() {
+        // two cursors, after "a" and after "b"
+        let mut b = buf("a b");
+        let (mut c1, mut c2) = (Sel::caret(1), Sel::caret(3));
+        let mut type_both = |b: &mut Buffer, c1: &mut Sel, c2: &mut Sel, ch: &str| {
+            b.group_begin(*c1, vec![*c2]);
+            b.insert(c2, ch, EditKind::Type);
+            b.insert(c1, ch, EditKind::Type);
+            *c2 = Sel::caret(c2.head + 1); // the earlier insert pushed it along
+            b.group_end(*c1, vec![*c2], EditKind::Type);
+        };
+        type_both(&mut b, &mut c1, &mut c2, "x");
+        type_both(&mut b, &mut c1, &mut c2, "y");
+        assert_eq!(b.text(), "axy bxy");
+        b.take_notes();
+        // both letters at both cursors come back out together
+        assert_eq!(b.undo(), Some(Sel::caret(1)));
+        assert_eq!(b.take_restored(), vec![Sel::caret(3)]);
+        assert_eq!(b.text(), "a b");
+        assert!(!b.is_dirty());
+        assert_eq!(b.redo(), Some(Sel::caret(3)));
+        assert_eq!(b.take_restored(), vec![Sel::caret(7)]);
+        assert_eq!(b.text(), "axy bxy");
+        // a space starts a new step, as with one cursor
+        type_both(&mut b, &mut c1, &mut c2, " ");
+        b.undo();
+        assert_eq!(b.text(), "axy bxy");
     }
 
     #[test]
