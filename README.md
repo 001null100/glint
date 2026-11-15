@@ -8,6 +8,8 @@ restarts — including unsaved drafts.
 
 ![Cyberpunk syntax palette](assets/syntax-preview.png)
 
+![Markdown live preview](assets/markdown-preview.png)
+
 ## Features
 
 - **Tabs and splits** — tabs per pane, drag to reorder or drop onto another pane,
@@ -22,6 +24,11 @@ restarts — including unsaved drafts.
 - **Command palette**, quick switcher, go to line, language picker.
 - **Eight themes**, each with its own animated background and adjustable knobs:
   Aurora, Deep Space, Nebula, Ember, Synthwave, Cascade, Abyss, Void.
+- **Markdown live preview** — `.md` files are shown rendered (headings, bold,
+  italic, links, wiki links, inline code, lists, task checkboxes you can click,
+  quotes, rules, highlights, strikethrough, front matter) and the line under the
+  caret or selection turns back into raw Markdown for editing. Code blocks stay
+  raw. Ctrl+Shift+M switches the preview off and on.
 - **Syntax palettes** chosen separately from the theme: Cyberpunk (default),
   Outrun, Candy, Ice, or "Match theme". 37 token colours, including control
   flow, calls, built-ins, modifiers, lifetimes/labels, brackets and doc comments.
@@ -59,6 +66,7 @@ Needs a Vulkan (or GL) capable GPU. Tested on Linux / Wayland (KDE Plasma).
 | Ctrl+/ | toggle comment |
 | Ctrl+= / Ctrl+- / Ctrl+0, Ctrl+wheel | zoom |
 | Alt+Z | toggle word wrap |
+| Ctrl+Shift+M | toggle Markdown preview |
 | F11 | fullscreen |
 
 Closing an unsaved tab asks once; **Don't Save** is the default, so `Ctrl+W`

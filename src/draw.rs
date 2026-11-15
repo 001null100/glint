@@ -106,6 +106,7 @@ impl App {
                         matches,
                         current,
                         scrollbar_held,
+                        md: self.cfg.md_preview && doc.is_markdown(),
                         // catch up faster on big files while the user is idle
                         hl_budget_ms: if self.now - self.last_input > 0.2 { 11 } else { 4 },
                     },

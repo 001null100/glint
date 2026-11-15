@@ -10,6 +10,7 @@ mod editor;
 mod find;
 mod gfx;
 mod highlight;
+mod md;
 mod overlay;
 mod pane;
 mod platform;

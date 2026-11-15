@@ -1806,6 +1806,12 @@ impl App {
                 self.nav(|v, _| v.reveal = Reveal::Center);
                 self.toast(0, if self.cfg.wrap { "Word wrap on" } else { "Word wrap off" });
             }
+            Cmd::ToggleMdPreview => {
+                self.cfg.md_preview = !self.cfg.md_preview;
+                self.apply_cfg();
+                self.nav(|v, _| v.reveal = Reveal::Center);
+                self.toast(0, if self.cfg.md_preview { "Markdown preview on" } else { "Markdown preview off (raw text)" });
+            }
             Cmd::ToggleLigatures => {
                 self.cfg.ligatures = !self.cfg.ligatures;
                 self.apply_cfg();
@@ -2075,6 +2081,7 @@ impl App {
             self.dirty = true;
         }
         let tw = self.cfg.tab_width;
+        let md_on = self.cfg.md_preview;
         let mut cursor = hit.map(|h| h.cursor).unwrap_or_default();
         match &mut self.drag {
             None => {
@@ -2099,7 +2106,7 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&pane) {
                     if let Some(tab) = p.tabs.get_mut(p.active) {
                         if let Some(d) = self.docs.get(&tab.view.doc) {
-                            let pos = editor::pos_at(&mut self.cx, &tab.view, d, x, y, tw);
+                            let pos = editor::pos_at(&mut self.cx, &tab.view, d, x, y, tw, md_on && d.is_markdown());
                             let v = &mut tab.view;
                             match mode {
                                 1 => v.sel.head = pos,
@@ -2254,10 +2261,29 @@ impl App {
             HitId::Editor(p) => {
                 self.focus_pane(p);
                 self.kb = Kb::Editor;
+                // a click on a rendered task checkbox ticks it instead of moving the caret
+                let check = self.panes.get(&p).and_then(|pn| pn.tabs.get(pn.active)).and_then(|t| t.view.checks.iter().find(|c| c.0.contains(x, y)).copied());
+                if let Some((_, line, src)) = check {
+                    self.edit(|v, d| {
+                        let pos = d.buf.line_byte_to_pos(line, src);
+                        let now = d.buf.slice(pos, pos + 1);
+                        if now == " " || now.eq_ignore_ascii_case("x") {
+                            d.buf.begin(v.sel);
+                            d.buf.replace(pos, pos + 1, if now == " " { "x" } else { " " });
+                            d.buf.commit(v.sel, EditKind::Other);
+                        }
+                    });
+                    // ticking a box must not scroll the view to the caret
+                    if let Some((v, _)) = self.cur() {
+                        v.reveal = Reveal::None;
+                    }
+                    return;
+                }
+                let md_on = self.cfg.md_preview;
                 let Some(pane) = self.panes.get_mut(&p) else { return };
                 let Some(tab) = pane.tabs.get_mut(pane.active) else { return };
                 let Some(d) = self.docs.get(&tab.view.doc) else { return };
-                let pos = editor::pos_at(&mut self.cx, &tab.view, d, x, y, tw);
+                let pos = editor::pos_at(&mut self.cx, &tab.view, d, x, y, tw, md_on && d.is_markdown());
                 let v = &mut tab.view;
                 let origin = match clicks {
                     2 => {

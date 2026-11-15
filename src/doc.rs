@@ -48,6 +48,9 @@ pub struct Document {
     pub draft_rev: u64,
     pub has_draft_file: bool,
     pub edited_at: f64,
+    /// Markdown line kinds (see `md::scan`), valid for `md_rev`.
+    pub md_kinds: Vec<u8>,
+    md_rev: u64,
 }
 
 const MAX_FILE: u64 = 256 * 1024 * 1024;
@@ -109,6 +112,8 @@ impl Document {
             draft_rev: 0,
             has_draft_file: false,
             edited_at: 0.0,
+            md_kinds: Vec::new(),
+            md_rev: u64::MAX,
         }
     }
 
@@ -150,6 +155,18 @@ impl Document {
         let mut d = Document::from_text(id, &raw, Some(path.to_path_buf()), tab_width);
         d.disk = DiskStamp::of(path);
         Ok(d)
+    }
+
+    pub fn is_markdown(&self) -> bool {
+        self.hl.lang() == "Markdown"
+    }
+
+    /// Bring the Markdown block scan up to date with the text.
+    pub fn md_sync(&mut self) {
+        if self.md_rev != self.buf.rev {
+            self.md_kinds = crate::md::scan(&self.buf.rope);
+            self.md_rev = self.buf.rev;
+        }
     }
 
     pub fn title(&self) -> String {

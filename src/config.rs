@@ -54,6 +54,8 @@ pub struct Config {
     pub line_height: f32,
     pub ligatures: bool,
     pub wrap: bool,
+    /// Show Markdown files rendered, with raw text only on the caret line.
+    pub md_preview: bool,
     pub tab_width: usize,
     pub cursor_blink: bool,
     pub animations: bool,
@@ -80,6 +82,7 @@ impl Default for Config {
             line_height: 1.55,
             ligatures: false,
             wrap: true,
+            md_preview: true,
             tab_width: 4,
             cursor_blink: true,
             animations: true,

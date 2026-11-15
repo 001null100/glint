@@ -127,10 +127,6 @@ fn strip_eol(s: &str) -> &str {
     s.trim_end_matches(['\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'])
 }
 
-fn rows_of(rope: &Rope, line: usize, cols: usize, tab_w: usize) -> u32 {
-    let text: Cow<str> = rope.line(line).into();
-    count_rows(strip_eol(&text), cols, tab_w) as u32
-}
 
 const TOUCHED: u32 = u32::MAX;
 
@@ -145,6 +141,10 @@ pub struct WrapMap {
     rows: Vec<u32>,
     /// `prefix[i]` = first visual row of line `i`; one extra entry for the total.
     prefix: Vec<u32>,
+    /// Markdown line kinds (empty when not previewing): headings are set
+    /// larger, so they fit fewer columns and take more row units.
+    kinds: Vec<u8>,
+    key: u64,
 }
 
 impl Default for WrapMap {
@@ -155,7 +155,7 @@ impl Default for WrapMap {
 
 impl WrapMap {
     pub fn new() -> WrapMap {
-        WrapMap { cols: 0, tab_w: 4, built: false, lines: 1, rows: Vec::new(), prefix: Vec::new() }
+        WrapMap { cols: 0, tab_w: 4, built: false, lines: 1, rows: Vec::new(), prefix: Vec::new(), kinds: Vec::new(), key: 0 }
     }
 
     pub fn cols(&self) -> usize {
@@ -166,31 +166,68 @@ impl WrapMap {
     /// width or tab size changed, it was never built, or the line count
     /// disagrees; otherwise does nothing.
     pub fn sync(&mut self, rope: &Rope, cols: usize, tab_w: usize) {
+        self.sync_kinds(rope, cols, tab_w, &[], 0);
+    }
+
+    /// Like `sync`, with Markdown line kinds. `key` identifies the kinds
+    /// (e.g. the buffer revision); a new key forces a rebuild.
+    pub fn sync_kinds(&mut self, rope: &Rope, cols: usize, tab_w: usize, kinds: &[u8], key: u64) {
         let n = rope.len_lines();
-        if cols == 0 {
+        if cols == 0 && kinds.is_empty() {
             self.cols = 0;
             self.tab_w = tab_w;
             self.built = true;
             self.lines = n;
             self.rows.clear();
             self.prefix.clear();
+            self.kinds.clear();
+            self.key = 0;
             return;
         }
-        if self.built && self.cols == cols && self.tab_w == tab_w && self.rows.len() == n {
+        if self.built && self.cols == cols && self.tab_w == tab_w && self.rows.len() == n && self.key == key {
             return;
         }
         self.cols = cols;
         self.tab_w = tab_w;
+        self.key = key;
+        self.kinds.clear();
+        self.kinds.extend_from_slice(kinds);
         self.rebuild(rope);
     }
 
+    fn kind(&self, line: usize) -> u8 {
+        self.kinds.get(line).copied().unwrap_or(0)
+    }
+
+    /// Font scale of a line (headings in a Markdown preview are larger).
+    pub fn scale(&self, line: usize) -> f32 {
+        crate::md::metrics(self.kind(line)).0
+    }
+
+    /// Height of each visual row of a line, in row units.
+    pub fn units(&self, line: usize) -> usize {
+        crate::md::metrics(self.kind(line)).1
+    }
+
+    /// Columns available to a line (0 = no wrapping).
+    pub fn cols_for(&self, line: usize) -> usize {
+        let s = self.scale(line);
+        if self.cols == 0 || s == 1.0 { self.cols } else { ((self.cols as f32 / s).floor() as usize).max(8) }
+    }
+
+    fn rows_of(&self, rope: &Rope, line: usize) -> u32 {
+        let text: Cow<str> = rope.line(line).into();
+        (count_rows(strip_eol(&text), self.cols_for(line), self.tab_w) * self.units(line)) as u32
+    }
+
     fn rebuild(&mut self, rope: &Rope) {
-        let (cols, tab_w) = (self.cols, self.tab_w);
-        self.rows.clear();
-        self.rows.extend(rope.lines().map(|l| {
+        let mut rows = std::mem::take(&mut self.rows);
+        rows.clear();
+        for (i, l) in rope.lines().enumerate() {
             let text: Cow<str> = l.into();
-            count_rows(strip_eol(&text), cols, tab_w) as u32
-        }));
+            rows.push((count_rows(strip_eol(&text), self.cols_for(i), self.tab_w) * self.units(i)) as u32);
+        }
+        self.rows = rows;
         self.lines = self.rows.len();
         self.built = true;
         self.rebuild_prefix(0);
@@ -212,7 +249,7 @@ impl WrapMap {
     /// lines_inserted)` of one edit, in order; `rope` is the final text.
     pub fn edit(&mut self, rope: &Rope, notes: &[(usize, usize, usize)]) {
         let n = rope.len_lines();
-        if self.cols == 0 || !self.built {
+        if !self.wrapping() {
             self.lines = n;
             return;
         }
@@ -239,14 +276,14 @@ impl WrapMap {
         }
         for i in first..n {
             if self.rows[i] == TOUCHED {
-                self.rows[i] = rows_of(rope, i, self.cols, self.tab_w);
+                self.rows[i] = self.rows_of(rope, i);
             }
         }
         self.rebuild_prefix(first);
     }
 
     fn wrapping(&self) -> bool {
-        self.cols != 0 && self.built && !self.rows.is_empty()
+        self.built && !self.rows.is_empty()
     }
 
     pub fn total_rows(&self, rope: &Rope) -> usize {
